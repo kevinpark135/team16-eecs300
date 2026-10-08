@@ -1,10 +1,15 @@
 #include <fcntl.h>
 #include <termios.h>
 #include <unistd.h>
+#include <sys/ioctl.h>
 #include <iostream>
 #include <algorithm>
+#include <chrono>
+#include <cmath>
 #include <cerrno>
 #include <cstring>
+#include <iomanip>
+#include <limits>
 #include <poll.h>
 
 #include <SDL.h>
@@ -16,7 +21,8 @@ const int SCREEN_HEIGHT = 720;
 
 bool init(const char *device);
 void cleanup();
-void onRecieved(floatPacket packet);
+void initializeWaitingPattern();
+void onReceived(const floatPacket &packet);
 
 SDL_Window *gWindow = nullptr;
 SDL_Renderer *gRenderer = nullptr;
@@ -28,6 +34,7 @@ packetReader *reader = nullptr;
 SDL_Color *gPixels = nullptr;
 
 int serial_port = -1;
+uint64_t gRenderedPackets = 0;
 
 bool init(const char *device)
 {
@@ -39,7 +46,19 @@ bool init(const char *device)
     };
     serial_port = open(device, O_RDWR | O_NOCTTY | O_NONBLOCK);
     if (serial_port < 0)
+    {
+        if (errno == EBUSY)
+            return fail("open", "Resource busy; close Arduino Serial Monitor and any other viewer");
         return fail("open", std::strerror(errno));
+    }
+#ifdef TIOCEXCL
+    if (ioctl(serial_port, TIOCEXCL) != 0)
+    {
+        if (errno == EBUSY)
+            return fail("exclusive access", "Resource busy; close Arduino Serial Monitor and any other viewer");
+        return fail("TIOCEXCL", std::strerror(errno));
+    }
+#endif
 
     termios tty{};
     if (tcgetattr(serial_port, &tty) != 0)
@@ -96,8 +115,11 @@ bool init(const char *device)
         return fail("SDL_CreateRenderer", SDL_GetError());
     }
 
-    reader = new packetReader(onRecieved);
+    reader = new packetReader(onReceived);
     gPixels = new SDL_Color[768]();
+    initializeWaitingPattern();
+    std::cerr << "[viewer] " << device
+              << " opened at 115200 baud, raw 8N1; waiting for AA BB + 3072-byte packets\n";
     return true;
 }
 
@@ -121,22 +143,45 @@ void cleanup()
     serial_port = -1;
 }
 
-void onRecieved(floatPacket packet)
+void initializeWaitingPattern()
 {
-    float min = packet.data[0];
-    float max = packet.data[0];
-
-    for (size_t i = 1; i < sizeof(packet.data) / sizeof(float); ++i)
+    for (int row = 0; row < 24; ++row)
     {
-        if (packet.data[i] < min)
-            min = packet.data[i];
-        if (packet.data[i] > max)
-            max = packet.data[i];
+        for (int column = 0; column < 32; ++column)
+        {
+            const bool alternate = ((row / 2) + (column / 2)) % 2 != 0;
+            gPixels[row * 32 + column] = alternate
+                                                    ? SDL_Color{72, 96, 160, 255}
+                                                    : SDL_Color{32, 48, 96, 255};
+        }
+    }
+}
+
+void onReceived(const floatPacket &packet)
+{
+    float min = std::numeric_limits<float>::infinity();
+    float max = -std::numeric_limits<float>::infinity();
+    size_t finiteCount = 0;
+
+    for (size_t i = 0; i < sizeof(packet.data) / sizeof(float); ++i)
+    {
+        if (!std::isfinite(packet.data[i]))
+            continue;
+        ++finiteCount;
+        min = std::min(min, packet.data[i]);
+        max = std::max(max, packet.data[i]);
     }
 
     for (size_t i = 0; i < sizeof(packet.data) / sizeof(float); ++i)
     {
-        float temp = max > min ? (packet.data[i] - min) / (max - min) : 0.0f;
+        if (!std::isfinite(packet.data[i]))
+        {
+            gPixels[i] = SDL_Color{255, 0, 255, 255};
+            continue;
+        }
+
+        float temp = max > min ? (packet.data[i] - min) / (max - min) : 0.5f;
+        temp = std::max(0.0f, std::min(1.0f, temp));
         SDL_Color out;
         out.a = 0xFF;
 
@@ -167,6 +212,28 @@ void onRecieved(floatPacket packet)
 
         gPixels[i] = out;
     }
+
+    ++gRenderedPackets;
+    static auto lastLog = std::chrono::steady_clock::time_point{};
+    const auto now = std::chrono::steady_clock::now();
+    if (gRenderedPackets == 1 || now - lastLog >= std::chrono::seconds(1))
+    {
+        std::cerr << "[temperature] packet=" << gRenderedPackets
+                  << " finite=" << finiteCount << "/768";
+        if (finiteCount > 0)
+        {
+            std::cerr << std::fixed << std::setprecision(2)
+                      << " min=" << min << "C max=" << max << "C";
+        }
+        else
+        {
+            std::cerr << " no finite temperatures; invalid pixels are magenta";
+        }
+        if (finiteCount < 768)
+            std::cerr << " invalid=" << (768 - finiteCount);
+        std::cerr << '\n';
+        lastLog = now;
+    }
 }
 
 int main(int argc, char *argv[])
@@ -184,6 +251,8 @@ int main(int argc, char *argv[])
     int exitCode = 0;
     bool quit = false;
     SDL_Event e;
+    uint64_t readCalls = 0;
+    auto lastStatusLog = std::chrono::steady_clock::now() - std::chrono::seconds(2);
 
     while (!quit)
     {
@@ -215,6 +284,7 @@ int main(int argc, char *argv[])
         {
             uint8_t read_buffer[4096];
             ssize_t num_bytes = read(serial_port, read_buffer, sizeof(read_buffer));
+            ++readCalls;
             if (num_bytes > 0)
                 reader->processRaw(read_buffer, static_cast<size_t>(num_bytes));
             else if (num_bytes < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR)
@@ -223,6 +293,23 @@ int main(int argc, char *argv[])
                 exitCode = 1;
                 break;
             }
+        }
+
+        const auto now = std::chrono::steady_clock::now();
+        if (now - lastStatusLog >= std::chrono::seconds(2))
+        {
+            std::cerr << "[serial] bytes=" << reader->getTotalBytes()
+                      << " reads=" << readCalls
+                      << " header1=" << reader->getHeader1Candidates()
+                      << " headers=" << reader->getHeadersFound()
+                      << " packets=" << reader->getPacketsCompleted()
+                      << " state=" << reader->getStateName();
+            if (reader->getPayloadBytesRead() > 0)
+                std::cerr << " payload=" << reader->getPayloadBytesRead() << "/3072";
+            if (reader->getPacketsCompleted() == 0)
+                std::cerr << " (showing blue waiting pattern)";
+            std::cerr << '\n';
+            lastStatusLog = now;
         }
 
         SDL_SetRenderDrawColor(gRenderer, 0xff, 0xff, 0xff, 0xff);
