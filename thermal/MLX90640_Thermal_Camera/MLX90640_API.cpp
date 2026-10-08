@@ -17,6 +17,7 @@
 #include "MLX90640_I2C_Driver.h"
 #include "MLX90640_API.h"
 #include <math.h>
+#include <Arduino.h>
 
 void ExtractVDDParameters(uint16_t *eeData, paramsMLX90640 *mlx90640);
 void ExtractPTATParameters(uint16_t *eeData, paramsMLX90640 *mlx90640);
@@ -49,6 +50,7 @@ int MLX90640_GetFrameData(uint8_t slaveAddr, uint16_t *frameData)
     int error = 1;
     uint8_t cnt = 0;
     
+    const unsigned long start = millis();
     dataReady = 0;
     while(dataReady == 0)
     {
@@ -58,12 +60,18 @@ int MLX90640_GetFrameData(uint8_t slaveAddr, uint16_t *frameData)
             return error;
         }    
         dataReady = statusRegister & 0x0008;
+        if (dataReady == 0)
+        {
+            // 0.5 Hz (the slowest setting) needs up to 2 seconds.
+            if (millis() - start >= 2500UL) return -9;
+            delay(1);
+        }
     }       
         
     while(dataReady != 0 && cnt < 5)
     { 
         error = MLX90640_I2CWrite(slaveAddr, 0x8000, 0x0030);
-        if(error == -1)
+        if(error != 0)
         {
             return error;
         }
@@ -83,20 +91,20 @@ int MLX90640_GetFrameData(uint8_t slaveAddr, uint16_t *frameData)
         cnt = cnt + 1;
     }
     
-    if(cnt > 4)
+    if(dataReady != 0)
     {
         return -8;
     }    
     
     error = MLX90640_I2CRead(slaveAddr, 0x800D, 1, &controlRegister1);
-    frameData[832] = controlRegister1;
-    frameData[833] = statusRegister & 0x0001;
     
     if(error != 0)
     {
         return error;
     }
     
+    frameData[832] = controlRegister1;
+    frameData[833] = statusRegister & 0x0001;
     return frameData[833];    
 }
 

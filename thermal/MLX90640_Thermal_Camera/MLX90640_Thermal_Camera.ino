@@ -3,98 +3,98 @@
 #include "MLX90640_API.h"
 #include "MLX90640_I2C_Driver.h"
 
-#include "../floatPacket.hpp"
-
 #define EMMISIVITY 0.95
-#define TA_SHIFT 8 
+#define TA_SHIFT 8
 
 paramsMLX90640 mlx90640;
-const byte MLX90640_address = 0x33; //Default 7-bit unshifted address of the MLX90640
+const byte MLX90640_address = 0x33;
 static float tempValues[32 * 24];
+static_assert(sizeof(tempValues) == 3072, "Protocol requires 768 32-bit floats");
+static bool sensorReady = false;
+
+// Only called outside packet writes; suppress recurring errors for 2 seconds.
+void reportError(const char* message, int status) {
+  static bool reported = false;
+  static unsigned long lastReport = 0;
+  unsigned long now = millis();
+  if (!reported || now - lastReport >= 2000UL) {
+    Serial.print(message);
+    Serial.print(": ");
+    Serial.println(status);
+    lastReport = now;
+    reported = true;
+  }
+}
 
 void setup() {
   Serial.begin(115200);
-  Wire.begin();
-  Wire.setClock(400000); 
-  Wire.beginTransmission((uint8_t)MLX90640_address);
-  if (Wire.endTransmission() != 0) {
-    Serial.println("MLX90640 not detected at default I2C address. Starting scan the device addr...");
-    Device_Scan();
-//    while(1);
+  // Initial connection test: SDA GPIO21, SCL GPIO22, fixed 400 kHz.
+  if (!Wire.begin(21, 22, 400000)) {
+    reportError("I2C initialization failed", -1);
+    return;
   }
-  else {
-    Serial.println("MLX90640 online!");
+  Wire.setTimeOut(50); // Bound each ESP32 I2C transaction as well.
+  Wire.beginTransmission(MLX90640_address);
+  int status = Wire.endTransmission();
+  if (status != 0) {
+    reportError("MLX90640 not detected at 0x33", status);
+    return;
   }
-  int status;
+
   uint16_t eeMLX90640[832];
   status = MLX90640_DumpEE(MLX90640_address, eeMLX90640);
-  if (status != 0) Serial.println("Failed to load system parameters");
+  if (status != 0) {
+    reportError("EEPROM read failed", status);
+    return;
+  }
   status = MLX90640_ExtractParameters(eeMLX90640, &mlx90640);
-  if (status != 0) Serial.println("Parameter extraction failed");
-  MLX90640_SetRefreshRate(MLX90640_address, 0x14); 
-  Wire.setClock(800000);
-}
-
-void loop(void) {
-  readTempValues();
-  delay(30);
+  if (status != 0) {
+    reportError("Parameter extraction failed", status);
+    return;
+  }
+  // The old 0x14 value was masked to 0x04 by the API: retain 8 Hz.
+  status = MLX90640_SetRefreshRate(MLX90640_address, 0x04);
+  if (status != 0) {
+    reportError("Refresh rate setup failed", status);
+    return;
+  }
+  sensorReady = true;
 }
 
 void readTempValues() {
-  for (byte x = 0 ; x < 2 ; x++) 
-  {
-    uint16_t mlx90640Frame[834];
-    int status = MLX90640_GetFrameData(MLX90640_address, mlx90640Frame);
-    if (status < 0)
-    {
-      //Serial.print("GetFrame Error: ");
-      //Serial.println(status);
+  uint8_t subpages = 0;
+  const byte maxAttempts = 6;
+  for (byte attempt = 0; attempt < maxAttempts; ++attempt) {
+    uint16_t frame[834];
+    int status = MLX90640_GetFrameData(MLX90640_address, frame);
+    if (status < 0) {
+      reportError("Frame read failed", status);
+      continue;
     }
-
-    float vdd = MLX90640_GetVdd(mlx90640Frame, &mlx90640);
-    float Ta = MLX90640_GetTa(mlx90640Frame, &mlx90640);
-
-    float tr = Ta - TA_SHIFT; 
-
-    MLX90640_CalculateTo(mlx90640Frame, &mlx90640, EMMISIVITY, tr, tempValues);
+    // GetFrameData returns the subpage, so both 0 and 1 are successes.
+    if (status > 1) {
+      reportError("Invalid subpage", status);
+      continue;
+    }
+    float Ta = MLX90640_GetTa(frame, &mlx90640);
+    MLX90640_CalculateTo(frame, &mlx90640, EMMISIVITY, Ta - TA_SHIFT, tempValues);
+    subpages |= static_cast<uint8_t>(1U << status);
+    if (subpages == 0x03) {
+      // No logging or sensor operations between header and complete payload.
+      const uint8_t header[] = {0xAA, 0xBB};
+      Serial.write(header, sizeof(header));
+      Serial.write(reinterpret_cast<const uint8_t*>(tempValues), sizeof(tempValues));
+      return;
+    }
   }
-  floatPacket packet;
-  for (int i = 0; i < 768; i++) {
-    packet.data[i] = tempValues[i];
-  }
-  Serial.write(0xAA);
-  Serial.write(0xBB);
-  Serial.write(packet.bytes, sizeof(packet.bytes));
+  reportError("Incomplete frame discarded", -10);
 }
 
-void Device_Scan() {
-  byte error, address;
-  int nDevices;
-  Serial.println("Scanning...");
-  nDevices = 0;
-  for (address = 1; address < 127; address++ )
-  {
-    Wire.beginTransmission(address);
-    error = Wire.endTransmission();
-    if (error == 0)
-    {
-      Serial.print("I2C device found at address 0x");
-      if (address < 16)
-        Serial.print("0");
-      Serial.print(address, HEX);
-      Serial.println("  !");
-      nDevices++;
-    }
-    else if (error == 4)
-    {
-      Serial.print("Unknow error at address 0x");
-      if (address < 16)
-        Serial.print("0");
-      Serial.println(address, HEX);
-    }
+void loop() {
+  if (!sensorReady) {
+    delay(100);
+    return;
   }
-  if (nDevices == 0)
-    Serial.println("No I2C devices found");
-  else
-    Serial.println("done");
+  readTempValues();
+  delay(30);
 }

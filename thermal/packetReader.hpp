@@ -1,9 +1,10 @@
 #include <cstdint>
 #include <stdio.h>
+#include <iostream>
 #include <functional>
 #include "floatPacket.hpp"
 
-#define DEBUG true
+#define DEBUG false
 
 enum parserState
 {

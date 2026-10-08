@@ -35,7 +35,10 @@
 //Teensy
 
 #elif ARDUINO_ARCH_ESP32
-//ESP32 based platforms
+//Keep chunks even and within the ESP32 Wire receive buffer.
+#ifndef I2C_BUFFER_LENGTH
+#define I2C_BUFFER_LENGTH 32
+#endif
 
 #else
 

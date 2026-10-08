@@ -23,7 +23,7 @@ void MLX90640_I2CInit()
 }
 
 //Read a number of words from startAddress. Store into Data array.
-//Returns 0 if successful, -1 if error
+//Returns 0 only on a complete read; negative values indicate errors.
 int MLX90640_I2CRead(uint8_t _deviceAddress, unsigned int startAddress, unsigned int nWordsRead, uint16_t *data)
 {
 
@@ -42,24 +42,23 @@ int MLX90640_I2CRead(uint8_t _deviceAddress, unsigned int startAddress, unsigned
     Wire.write(startAddress & 0xFF); //LSB
     if (Wire.endTransmission(false) != 0) //Do not release bus
     {
-      Serial.println("No ack read");
-      return (0); //Sensor did not ACK
+      return -1; //Sensor did not ACK
     }
 
     uint16_t numberOfBytesToRead = bytesRemaining;
     if (numberOfBytesToRead > I2C_BUFFER_LENGTH) numberOfBytesToRead = I2C_BUFFER_LENGTH;
 
-    Wire.requestFrom((uint8_t)_deviceAddress, numberOfBytesToRead);
-    if (Wire.available())
+    size_t received = Wire.requestFrom((uint8_t)_deviceAddress, (size_t)numberOfBytesToRead);
+    if (received != numberOfBytesToRead || Wire.available() < numberOfBytesToRead)
     {
-      for (uint16_t x = 0 ; x < numberOfBytesToRead / 2; x++)
-      {
-        //Store data into array
-        data[dataSpot] = Wire.read() << 8; //MSB
-        data[dataSpot] |= Wire.read(); //LSB
-
-        dataSpot++;
-      }
+      return -3; //Short read: never consume missing bytes.
+    }
+    for (uint16_t x = 0; x < numberOfBytesToRead / 2; x++)
+    {
+      int msb = Wire.read();
+      int lsb = Wire.read();
+      if (msb < 0 || lsb < 0) return -3;
+      data[dataSpot++] = (static_cast<uint16_t>(msb) << 8) | lsb;
     }
 
     bytesRemaining -= numberOfBytesToRead;
@@ -89,13 +88,16 @@ int MLX90640_I2CWrite(uint8_t _deviceAddress, unsigned int writeAddress, uint16_
   if (Wire.endTransmission() != 0)
   {
     //Sensor did not ACK
-    Serial.println("Error: Sensor did not ack");
     return (-1);
   }
 
   uint16_t dataCheck;
-  MLX90640_I2CRead(_deviceAddress, writeAddress, 1, &dataCheck);
-  if (dataCheck != data)
+  int error = MLX90640_I2CRead(_deviceAddress, writeAddress, 1, &dataCheck);
+  if (error != 0) return error;
+  // Status register bits 2:0 report the last subpage (datasheet Fig. 11).
+  // They are sensor-controlled, so subpage 1 must not fail write verification.
+  const uint16_t verifyMask = writeAddress == 0x8000 ? 0xFFF8 : 0xFFFF;
+  if ((dataCheck & verifyMask) != (data & verifyMask))
   {
     //Serial.println("The write request didn't stick");
     return -2;
