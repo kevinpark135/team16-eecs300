@@ -11,18 +11,25 @@
 #include <iomanip>
 #include <limits>
 #include <poll.h>
+#include <sstream>
 
 #include <SDL.h>
 
 #include "packetReader.hpp"
+#include "blobDetector.hpp"
 
 const int SCREEN_WIDTH = 1280;
 const int SCREEN_HEIGHT = 720;
+const int CELL_SIZE = 10;
+
+thermal::BlobDetector gBlobDetector; // Defaults are centralized in blobDetector.hpp.
 
 bool init(const char *device);
 void cleanup();
 void initializeWaitingPattern();
 void onReceived(const floatPacket &packet);
+void updateDetectionTitle(const thermal::FrameResult &result);
+void drawBlobOverlays(const thermal::FrameResult &result);
 
 SDL_Window *gWindow = nullptr;
 SDL_Renderer *gRenderer = nullptr;
@@ -120,6 +127,10 @@ bool init(const char *device)
     initializeWaitingPattern();
     std::cerr << "[viewer] " << device
               << " opened at 115200 baud, raw 8N1; waiting for AA BB + 3072-byte packets\n";
+    std::cerr << "[thermal] Keep the scene empty for " << gBlobDetector.config().calibrationFrames
+              << " frames; R resets background/results. received_monotonic_ms is host packet\n"
+              << "          reception time, NOT sensor capture time. Blob labels are frame-local.\n";
+    updateDetectionTitle(gBlobDetector.snapshot());
     return true;
 }
 
@@ -159,6 +170,40 @@ void initializeWaitingPattern()
 
 void onReceived(const floatPacket &packet)
 {
+    // Exactly once per complete packet, using raw Celsius values before coloring.
+    const auto &result = gBlobDetector.processFrame(packet.data, thermal::Clock::now());
+    const auto receivedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        result.receivedAt->time_since_epoch()).count();
+    std::cerr << "[thermal] frame=" << result.frameNumber
+              << " received_monotonic_ms=" << receivedMs
+              << " status=" << thermal::statusName(result.status)
+              << " blobCount=";
+    if (const auto count = result.blobCount())
+        std::cerr << *count;
+    else
+        std::cerr << "unavailable";
+    std::cerr << " validPixels=" << result.validPixelCount << '/' << result.roiPixelCount
+              << " invalidPixels=" << result.invalidPixelCount
+              << " excludedRoiPixels=" << result.excludedPixelCount
+              << " backgroundUnavailable=" << result.backgroundUnavailablePixelCount;
+    if (!result.hasDetection())
+        std::cerr << " calibration=" << result.calibrationFramesCollected
+                  << '/' << gBlobDetector.config().calibrationFrames;
+    if (result.dataDegraded)
+        std::cerr << " quality=DEGRADED";
+    std::cerr << '\n';
+    for (const auto &blob : result.blobs)
+    {
+        const auto &box = blob.boundingBox;
+        std::cerr << std::fixed << std::setprecision(2)
+                  << "[blob] frame=" << result.frameNumber << " label=" << blob.label
+                  << " centroid=(" << blob.centroidX << ',' << blob.centroidY << ')'
+                  << " areaPixels=" << blob.areaPixels
+                  << " bbox=(" << box.minX << ',' << box.minY << ")-("
+                  << box.maxX << ',' << box.maxY << ')'
+                  << " mean=" << blob.meanTemperatureC << "C max=" << blob.maxTemperatureC << "C\n";
+    }
+
     float min = std::numeric_limits<float>::infinity();
     float max = -std::numeric_limits<float>::infinity();
     size_t finiteCount = 0;
@@ -236,6 +281,56 @@ void onReceived(const floatPacket &packet)
     }
 }
 
+void updateDetectionTitle(const thermal::FrameResult &result)
+{
+    std::ostringstream title;
+    title << "Thermal | Blobs: ";
+    if (const auto count = result.blobCount())
+        title << *count;
+    else
+        title << "--";
+    title << " | " << thermal::statusName(result.status);
+    if (result.status == thermal::DetectionStatus::Calibrating)
+        title << ' ' << result.calibrationFramesCollected << '/' << gBlobDetector.config().calibrationFrames;
+    else if (!result.backgroundReady && result.status != thermal::DetectionStatus::Waiting)
+        title << " | CALIBRATING " << result.calibrationFramesCollected
+              << '/' << gBlobDetector.config().calibrationFrames;
+    if (result.dataDegraded && result.status != thermal::DetectionStatus::Degraded)
+        title << " | DEGRADED";
+    if (result.receivedAt)
+        title << " | excluded ROI: " << result.excludedPixelCount
+              << " | invalid: " << result.invalidPixelCount;
+    const std::string text = title.str();
+    static std::string previousTitle;
+    if (text != previousTitle)
+    {
+        SDL_SetWindowTitle(gWindow, text.c_str());
+        previousTitle = text;
+    }
+}
+
+void drawBlobOverlays(const thermal::FrameResult &result)
+{
+    if (!result.hasDetection())
+        return;
+    for (const auto &blob : result.blobs)
+    {
+        const auto &box = blob.boundingBox;
+        SDL_Rect rect{box.minX * CELL_SIZE, box.minY * CELL_SIZE,
+                      (box.maxX - box.minX + 1) * CELL_SIZE,
+                      (box.maxY - box.minY + 1) * CELL_SIZE};
+        SDL_SetRenderDrawColor(gRenderer, 255, 255, 255, 255);
+        SDL_RenderDrawRect(gRenderer, &rect);
+        // Sensor coordinates name cells; +0.5 puts the cross at the cell center.
+        const int cx = static_cast<int>(std::lround((blob.centroidX + 0.5) * CELL_SIZE));
+        const int cy = static_cast<int>(std::lround((blob.centroidY + 0.5) * CELL_SIZE));
+        const int radius = CELL_SIZE / 2;
+        SDL_SetRenderDrawColor(gRenderer, 255, 0, 0, 255);
+        SDL_RenderDrawLine(gRenderer, cx - radius, cy, cx + radius, cy);
+        SDL_RenderDrawLine(gRenderer, cx, cy - radius, cx, cy + radius);
+    }
+}
+
 int main(int argc, char *argv[])
 {
     if (argc != 2)
@@ -247,12 +342,15 @@ int main(int argc, char *argv[])
     {
         return 1;
     }
+    // Start the no-packet timeout after serial/SDL initialization has finished.
+    gBlobDetector = thermal::BlobDetector(gBlobDetector.config());
 
     int exitCode = 0;
     bool quit = false;
     SDL_Event e;
     uint64_t readCalls = 0;
     auto lastStatusLog = std::chrono::steady_clock::now() - std::chrono::seconds(2);
+    auto previousDetectionStatus = thermal::DetectionStatus::Waiting;
 
     while (!quit)
     {
@@ -261,6 +359,12 @@ int main(int argc, char *argv[])
             if (e.type == SDL_QUIT)
             {
                 quit = true;
+            }
+            else if (e.type == SDL_KEYDOWN && e.key.keysym.sym == SDLK_r && e.key.repeat == 0)
+            {
+                gBlobDetector.reset();
+                initializeWaitingPattern();
+                std::cerr << "[thermal] background/results reset; CALIBRATING: keep the scene empty\n";
             }
         }
 
@@ -296,6 +400,17 @@ int main(int argc, char *argv[])
         }
 
         const auto now = std::chrono::steady_clock::now();
+        const auto detection = gBlobDetector.snapshot(now);
+        updateDetectionTitle(detection);
+        if (detection.status != previousDetectionStatus)
+        {
+            std::cerr << "[viewer] detection=" << thermal::statusName(detection.status);
+            if (detection.status == thermal::DetectionStatus::Stale)
+                std::cerr << "; no complete packet for " << gBlobDetector.config().staleTimeout.count()
+                          << "ms; blob count unavailable; heatmap shows last frame";
+            std::cerr << '\n';
+            previousDetectionStatus = detection.status;
+        }
         if (now - lastStatusLog >= std::chrono::seconds(2))
         {
             std::cerr << "[serial] bytes=" << reader->getTotalBytes()
@@ -318,16 +433,15 @@ int main(int argc, char *argv[])
         {
             for (int j = 0; j < 32; ++j)
             {
-                int length = 10;
-
                 SDL_Color currentColor = gPixels[i * 32 + j];
                 SDL_SetRenderDrawColor(gRenderer, currentColor.r, currentColor.g, currentColor.b, 0xff);
 
-                SDL_Rect pixelRect = {j * length, i * length, length, length};
+                SDL_Rect pixelRect = {j * CELL_SIZE, i * CELL_SIZE, CELL_SIZE, CELL_SIZE};
                 SDL_RenderFillRect(gRenderer, &pixelRect);
             }
         }
 
+        drawBlobOverlays(detection);
         SDL_RenderPresent(gRenderer);
     }
     cleanup();
