@@ -16,10 +16,6 @@ VL53L5CX_ResultsData data2;
 void setup() {
   Serial.begin(115200);
   delay(1500); 
-  
-  Serial.println("\n=========================================");
-  Serial.println("MCU ALIVE: Serial communication started!");
-  Serial.println("=========================================");
 
   // Set up LPn pins as outputs
   pinMode(LPN_PIN_1, OUTPUT);
@@ -37,18 +33,18 @@ void setup() {
   Wire.setClock(100000); 
   
   Serial.println("Step 3: Attempting Sensor 1 Wakeup...");
-  digitalWrite(LPN_PIN_1, HIGH); // Wake up Sensor 1
+  digitalWrite(LPN_PIN_1, HIGH);
   delay(200); 
 
   Serial.println("Step 4: Calling sensor1.begin()...");
   if (!sensor1.begin()) {
-    Serial.println(">>> CRITICAL ERROR: Sensor 1 failed to reply at default 0x29! Check I2C lines.");
+    Serial.println("ERROR: Sensor 1 failed to reply at default 0x29! Check I2C lines.");
     while (1);
   }
   
   Serial.println("Step 5: Changing Sensor 1 Address...");
   if (!sensor1.setAddress(0x30)) {
-    Serial.println(">>> CRITICAL ERROR: Failed to assign 0x30 to Sensor 1!");
+    Serial.println("ERROR: Failed to assign 0x30 to Sensor 1!");
     while (1);
   }
   Serial.println("Sensor 1 mapped to 0x30 successfully.");
@@ -59,12 +55,12 @@ void setup() {
 
   Serial.println("Step 7: Calling sensor2.begin()...");
   if (!sensor2.begin()) {
-    Serial.println(">>> CRITICAL ERROR: Sensor 2 failed to reply at default 0x29!");
+    Serial.println("ERROR: Sensor 2 failed to reply at default 0x29!");
     while (1);
   }
   
   if (!sensor2.setAddress(0x32)) {
-    Serial.println(">>> CRITICAL ERROR: Failed to assign 0x32 to Sensor 2!");
+    Serial.println("ERROR: Failed to assign 0x32 to Sensor 2!");
     while (1);
   }
   Serial.println("Sensor 2 mapped to 0x32 successfully.");
@@ -76,8 +72,6 @@ void setup() {
   sensor2.setRangingFrequency(15);
   sensor1.startRanging();
   sensor2.startRanging();
-  
-  Serial.println("\n>>> SUCCESS: Setup complete. Starting stream!");
 }
 
 void loop() {
@@ -87,9 +81,9 @@ void loop() {
     sensor2.getRangingData(&data2);
 
     // Frame separator line
-    Serial.println("=================================================================================");
+    Serial.println("");
     Serial.println("      --- SENSOR 1 (0x30) ---            |            --- SENSOR 2 (0x32) ---      ");
-    Serial.println("=================================================================================");
+    Serial.println("");
 
     // Print the two grids side-by-side
     for (int row = 0; row < 8; row++) {
