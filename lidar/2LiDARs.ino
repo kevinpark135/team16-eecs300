@@ -1,9 +1,9 @@
 #include <Wire.h>
-#include <SparkFun_VL53L5CX_Library.h> // Works with VL53L7CX seamlessly
+#include <SparkFun_VL53L5CX_Library.h> 
 
 // Define unique LPn (Shutdown) control pins
-#define LPN_PIN_1 4
-#define LPN_PIN_2 5
+#define LPN_PIN_1 26
+#define LPN_PIN_2 19
 
 // Create independent driver instances
 SparkFun_VL53L5CX sensor1;
@@ -15,8 +15,6 @@ VL53L5CX_ResultsData data2;
 
 void setup() {
   Serial.begin(115200);
-  
-  // Give the computer a moment to attach the port
   delay(1500); 
   
   Serial.println("\n=========================================");
@@ -36,7 +34,7 @@ void setup() {
   // Initialize Standard I2C Bus on ESP32
   Serial.println("Step 2: Starting I2C Bus...");
   Wire.begin(21, 22); 
-  Wire.setClock(100000); // LOWERED to 100kHz for initial troubleshooting stableness
+  Wire.setClock(100000); 
   
   Serial.println("Step 3: Attempting Sensor 1 Wakeup...");
   digitalWrite(LPN_PIN_1, HIGH); // Wake up Sensor 1
