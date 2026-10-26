@@ -12,3 +12,6 @@ __MACOSX/
 *.o
 *.obj
 *.dSYM/
+
+# Code reference files
+/eecs280/
