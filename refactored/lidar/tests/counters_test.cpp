@@ -1,5 +1,4 @@
 #include "../directionCounter.hpp"
-#include "../laneCounter.hpp"
 #include <cassert>
 #include <iostream>
 #include <limits>
@@ -47,7 +46,7 @@ void directionsAndRearming() {
   calibrate(counter);
   passObject(counter, true, 2000);
   assert(counter.getRightCount() == 1 && counter.getLeftCount() == 0);
-  passObject(counter, false, 3000); // Still the same object until it disappears.
+  passObject(counter, false, 2600); // Still the same object until it disappears.
   assert(counter.getRightCount() == 1 && counter.getLeftCount() == 0);
   int distances[ZONES] = {};
   bool valid[ZONES] = {};
@@ -109,32 +108,65 @@ void timerPrecisionAndWrap() {
   assert(wrap.getRightCount() == 1);
 }
 
-void laneOrderAndIsolation() {
-  lidar::LaneState left;
-  lidar::LaneState right;
-  assert(lidar::updateLane(left, true, false, 100) == lidar::NO_CROSSING);
-  assert(lidar::updateLane(right, false, true, 110) == lidar::NO_CROSSING);
-  assert(lidar::updateLane(left, false, true, 200) == lidar::ENTERING);
-  assert(lidar::updateLane(right, true, false, 210) == lidar::LEAVING);
-  assert(left.state == lidar::IDLE && right.state == lidar::IDLE);
-  assert(lidar::updateLane(left, true, true, 300) == lidar::NO_CROSSING);
-  assert(left.state == lidar::IDLE);
+void axesInversionAndEvents() {
+  for (direction_counter::MovementAxis axis : {direction_counter::COLUMNS, direction_counter::ROWS}) {
+    for (bool reverse : {false, true}) {
+      direction_counter::DirectionConfig config;
+      config.axis = axis;
+      config.reverse = reverse;
+      DirectionCounter counter(config);
+      calibrate(counter);
+      int events = 0;
+      for (int position = 0; position < 8; ++position) {
+        int distances[ZONES] = {};
+        bool valid[ZONES] = {};
+        for (int offset = 0; offset < 3; ++offset) {
+          int zone = offset * 8 + position;
+          if (axis == direction_counter::ROWS) { zone = position * 8 + offset; }
+          distances[zone] = 800;
+          valid[zone] = true;
+        }
+        const direction_counter::Direction event = counter.processFrame(distances, valid, 2000 + position * 67);
+        if (event != direction_counter::NONE) {
+          ++events;
+          assert(event == (reverse ? direction_counter::LEFT : direction_counter::RIGHT));
+        }
+      }
+      assert(events == 1 && counter.objectPresent());
+      assert(counter.getLeftCount() == (reverse ? 1UL : 0UL));
+      assert(counter.getRightCount() == (reverse ? 0UL : 1UL));
+    }
+  }
 }
 
-void laneTimeoutAndWrap() {
-  lidar::LaneState lane;
-  lidar::updateLane(lane, true, false, 100);
-  lidar::updateLane(lane, false, false, 600);
-  assert(lane.state == lidar::SENSOR_1_FIRST); // Original timeout is strictly > 500.
-  lidar::updateLane(lane, false, false, 601);
-  assert(lane.state == lidar::IDLE);
+void oneShotAndSensorGap() {
+  DirectionCounter counter;
+  calibrate(counter);
+  passObject(counter, true, 2000);
+  int distances[ZONES] = {};
+  bool valid[ZONES] = {};
+  for (int row = 0; row < 3; ++row) {
+    distances[row * 8 + 7] = 800;
+    valid[row * 8 + 7] = true;
+  }
+  for (int i = 0; i < 10; ++i) {
+    assert(counter.processFrame(distances, valid, 2500 + i * 67) == direction_counter::NONE);
+  }
+  passObject(counter, false, 5000); // A long missing-frame interval starts a fresh history.
+  assert(counter.getRightCount() == 1 && counter.getLeftCount() == 1);
+}
 
-  const unsigned long start = std::numeric_limits<unsigned long>::max() - 50UL;
-  lidar::updateLane(lane, false, true, start);
-  assert(lidar::updateLane(lane, true, false, start + 100UL) == lidar::LEAVING);
-  // Preserve the original priority: a counterpart detection wins over timeout.
-  lidar::updateLane(lane, true, false, 1000);
-  assert(lidar::updateLane(lane, false, true, 2000) == lidar::ENTERING);
+void independentCounters() {
+  DirectionCounter left;
+  DirectionCounter right;
+  calibrate(left);
+  calibrate(right);
+  for (int i = 0; i < 8; ++i) {
+    objectFrame(left, i, 2000 + i * 67);
+    objectFrame(right, 7 - i, 2000 + i * 67);
+  }
+  assert(left.getRightCount() == 1 && left.getLeftCount() == 0);
+  assert(right.getLeftCount() == 1 && right.getRightCount() == 0);
 }
 
 int main() {
@@ -142,7 +174,8 @@ int main() {
   stationaryNoiseAndSlowMotion();
   backgroundAndDistanceLimits();
   timerPrecisionAndWrap();
-  laneOrderAndIsolation();
-  laneTimeoutAndWrap();
-  std::cout << "PASS 6 LiDAR test groups (direction, noise, background, timers, lanes)\n";
+  axesInversionAndEvents();
+  oneShotAndSensorGap();
+  independentCounters();
+  std::cout << "PASS 7 LiDAR test groups (direction, background, timers, axes, events, independence)\n";
 }

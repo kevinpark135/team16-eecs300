@@ -92,7 +92,7 @@ struct Blob
 struct FrameResult
 {
     std::uint64_t frameNumber = 0; // Complete packets processed; survives reset.
-    // Host monotonic packet reception time, NOT the sensor capture timestamp.
+    // Caller-supplied monotonic observation time, NOT the sensor capture timestamp.
     // No timestamp exists before the first packet or immediately after reset.
     bool hasReceivedFrame = false;
     Clock::time_point receivedAt{};

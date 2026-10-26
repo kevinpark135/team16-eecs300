@@ -37,7 +37,7 @@ inline bool wakeSensor(SparkFun_VL53L5CX &sensor, int shutdownPin,
 // EFFECTS: Assigns separate addresses before starting either sensor.
 inline bool startSensorPair(SparkFun_VL53L5CX &first,
                             SparkFun_VL53L5CX &second,
-                            unsigned long busFrequency) {
+                            unsigned long busFrequency, bool startBus = true) {
   pinMode(LPN_PIN_1, OUTPUT);
   pinMode(LPN_PIN_2, OUTPUT);
   digitalWrite(LPN_PIN_1, LOW);
@@ -45,7 +45,7 @@ inline bool startSensorPair(SparkFun_VL53L5CX &first,
   delay(200);
 
   // LPn keeps the second sensor off the bus during the first address change.
-  if (!Wire.begin(SDA_PIN, SCL_PIN)) {
+  if (startBus && !Wire.begin(SDA_PIN, SCL_PIN)) {
     return false;
   }
   Wire.setClock(busFrequency);

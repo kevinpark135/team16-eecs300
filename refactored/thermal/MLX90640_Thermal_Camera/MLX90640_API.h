@@ -51,6 +51,8 @@ typedef struct
 
 int MLX90640_DumpEE(uint8_t slaveAddr, uint16_t *eeData);
 int MLX90640_GetFrameData(uint8_t slaveAddr, uint16_t *frameData);
+// REQUIRES: frameData has 834 words. Returns 0/1, 2 if not ready, or a negative error.
+int MLX90640_TryGetFrameData(uint8_t slaveAddr, uint16_t *frameData);
 int MLX90640_ExtractParameters(uint16_t *eeData, paramsMLX90640 *mlx90640);
 float MLX90640_GetVdd(uint16_t *frameData, const paramsMLX90640 *params);
 float MLX90640_GetTa(uint16_t *frameData, const paramsMLX90640 *params);

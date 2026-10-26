@@ -17,20 +17,35 @@ const int DIRECTION_CONFIRM_FRAMES = 3;
 const int LOST_RESET_FRAMES = 5;
 
 enum Direction { NONE, LEFT, RIGHT };
+enum MovementAxis { COLUMNS, ROWS };
+
+struct DirectionConfig {
+  MovementAxis axis = COLUMNS;
+  bool reverse = false;
+  unsigned long frameTimeoutMs = 500;
+};
 
 class DirectionCounter {
  public:
+  explicit DirectionCounter(DirectionConfig settings = {}) : config(settings) {}
+  bool objectPresent() const { return present; }
   bool isCalibrated() const { return calibrationFrame >= CALIBRATION_FRAMES; }
   unsigned long getLeftCount() const { return leftCount; }
   unsigned long getRightCount() const { return rightCount; }
 
   // REQUIRES: Both arrays contain ZONE_COUNT entries; now is in milliseconds.
   // MODIFIES: Background, tracking history, and counts.
-  // EFFECTS: Learns a fixed background, then counts each tracked object once.
-  void processFrame(const int distances[], const bool valid[], unsigned long now) {
+  // EFFECTS: Returns a new confirmed direction once per object, otherwise NONE.
+  Direction processFrame(const int distances[], const bool valid[], unsigned long now) {
+    if (hasFrame && now - lastFrameAt > config.frameTimeoutMs) {
+      resetTracking(); // A long sensor gap must not join unrelated movements.
+    }
+    lastFrameAt = now;
+    hasFrame = true;
+    present = false;
     if (!isCalibrated()) {
       learnBackground(distances, valid);
-      return;
+      return NONE;
     }
 
     float centroid = 0.0f;
@@ -39,14 +54,16 @@ class DirectionCounter {
       if (lostFrames >= LOST_RESET_FRAMES) {
         resetTracking();
       }
-      return;
+      return NONE;
     }
 
+    present = true;
     lostFrames = 0;
     addHistory(centroid, now);
     if (historyCount == HISTORY_SIZE) {
-      confirmDirection(estimateDirection());
+      return confirmDirection(estimateDirection());
     }
+    return NONE;
   }
 
  private:
@@ -87,7 +104,10 @@ class DirectionCounter {
       if (isObject) {
         // Nearby cells contribute more to the horizontal center.
         const float weight = 1000.0f / (distance + 1.0f);
-        weightedX += (zone % GRID_SIZE) * weight;
+        int position = zone % GRID_SIZE;
+        if (config.axis == ROWS) { position = zone / GRID_SIZE; }
+        if (config.reverse) { position = GRID_SIZE - 1 - position; }
+        weightedX += position * weight;
         totalWeight += weight;
         ++objectCells;
       }
@@ -159,7 +179,7 @@ class DirectionCounter {
     return LEFT;
   }
 
-  void confirmDirection(Direction direction) {
+  Direction confirmDirection(Direction direction) {
     if (direction == NONE) {
       candidate = NONE;
       directionStreak = 0;
@@ -170,11 +190,12 @@ class DirectionCounter {
       directionStreak = 1;
     }
     if (directionStreak < DIRECTION_CONFIRM_FRAMES || countedCurrentObject) {
-      return;
+      return NONE;
     }
     if (candidate == LEFT) { ++leftCount; }
     if (candidate == RIGHT) { ++rightCount; }
     countedCurrentObject = true;
+    return candidate; // Emit once; unchanged following frames return NONE.
   }
 
   void resetTracking() {
@@ -185,6 +206,10 @@ class DirectionCounter {
     countedCurrentObject = false;
   }
 
+  DirectionConfig config;
+  bool present = false;
+  bool hasFrame = false;
+  unsigned long lastFrameAt = 0;
   std::uint32_t baselineSum[ZONE_COUNT] = {};
   int baselineSamples[ZONE_COUNT] = {};
   float baseline[ZONE_COUNT] = {};

@@ -47,11 +47,27 @@ def stage_lidar(source):
     return destination
 
 
+def stage_integrated():
+    destination = BUILD / "sketches/integrated"
+    destination.mkdir(parents=True, exist_ok=True)
+    for source in (ROOT / "integrated").iterdir():
+        if source.suffix in {".ino", ".hpp"}:
+            shutil.copy2(source, destination / source.name)
+    for source in (ROOT / "lidar").glob("*.hpp"):
+        shutil.copy2(source, destination / source.name)
+    shutil.copy2(ROOT / "thermal/blobDetector.hpp", destination / "blobDetector.hpp")
+    for source in (ROOT / "thermal/MLX90640_Thermal_Camera").iterdir():
+        if source.suffix in {".h", ".hpp", ".cpp"}:
+            shutil.copy2(source, destination / source.name)
+    return destination
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fqbn", default="esp32:esp32:esp32")
     parser.add_argument("--cli", default=shutil.which("arduino-cli") or
                         "/Applications/Arduino IDE.app/Contents/Resources/app/lib/backend/resources/arduino-cli")
+    parser.add_argument("--target", choices=["all", "integrated", "lidar", "thermal"], default="all")
     args = parser.parse_args()
     config = prepare_config()
     environment = os.environ.copy()
@@ -59,22 +75,26 @@ def main():
     temporary.mkdir(exist_ok=True)
     environment["TMPDIR"] = str(temporary)
     environment["PYTHONPYCACHEPREFIX"] = str(BUILD / "python-cache")
-    sources = [ROOT / "lidar/2LiDARs.ino", ROOT / "lidar/direction_sensing.ino",
-               ROOT / "lidar/2LiDARs_direction/2LiDARs_direction.ino"]
-    sketches = [stage_lidar(source) for source in sources]
-    sketches.append(ROOT / "thermal/MLX90640_Thermal_Camera")
-    for sketch in sketches:
-        print("Compiling", sketch.name, "for", args.fqbn, flush=True)
+    sketches = []
+    if args.target in {"all", "lidar"}:
+        sources = [ROOT / "lidar/2LiDARs.ino", ROOT / "lidar/direction_sensing.ino",
+                   ROOT / "lidar/2LiDARs_direction/2LiDARs_direction.ino"]
+        sketches.extend((stage_lidar(source), source.stem, []) for source in sources)
+    if args.target in {"all", "thermal"}:
+        source = ROOT / "thermal/MLX90640_Thermal_Camera"
+        sketches.append((source, "MLX90640_Thermal_Camera", []))
+        sketches.append((source, "thermal-diagnostic", ["--build-property",
+                         "compiler.cpp.extra_flags=-DTHERMAL_DIAGNOSTIC_MODE=1"]))
+    if args.target in {"all", "integrated"}:
+        sketches.append((stage_integrated(), "integrated", []))
+    for sketch, name, extra in sketches:
+        print("Compiling", name, "for", args.fqbn, flush=True)
         command = [args.cli, "compile", "--config-file", str(config), "--fqbn", args.fqbn,
-                   "--build-path", str(BUILD / "firmware" / sketch.name), "--warnings", "all",
+                   "--build-path", str(BUILD / "firmware" / name), "--warnings", "all",
                    "--library", str(Path.home() / "Documents/Arduino/libraries/SparkFun_VL53L5CX_Arduino_Library"),
                    str(sketch)]
-        subprocess.run(command, env=environment, check=True)
-    # Compile diagnostic mode too; text output must stay out of binary mode.
-    command[command.index("--build-path") + 1] = str(BUILD / "firmware/thermal-diagnostic")
-    command.extend(["--build-property", "compiler.cpp.extra_flags=-DTHERMAL_DIAGNOSTIC_MODE=1"])
-    subprocess.run(command, env=environment, check=True)
-    print("PASS: three LiDAR sketches and both thermal modes compiled.")
+        subprocess.run(command + extra, env=environment, check=True)
+    print("PASS:", len(sketches), "firmware builds completed.")
 
 
 if __name__ == "__main__":

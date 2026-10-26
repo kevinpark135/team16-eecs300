@@ -1,46 +1,34 @@
 #include "lidarCommon.hpp"
-#include "laneCounter.hpp"
+#include "directionSettings.hpp"
 
 SparkFun_VL53L5CX sensor1;
 SparkFun_VL53L5CX sensor2;
 VL53L5CX_ResultsData data1;
 VL53L5CX_ResultsData data2;
+direction_counter::DirectionCounter leftCounter(lidar::leftSettings());
+direction_counter::DirectionCounter rightCounter(lidar::rightSettings());
 bool sensorsReady = false;
-lidar::LaneState leftLane;
-lidar::LaneState rightLane;
 
-// REQUIRES: 0 <= firstColumn <= lastColumn < GRID_SIZE.
-// EFFECTS: Returns the nearest positive distance, or zero if none exists.
-int minimumDistance(const VL53L5CX_ResultsData &data,
-                    int firstColumn, int lastColumn) {
-  int nearest = 0;
-  for (int row = 0; row < lidar::GRID_SIZE; ++row) {
-    for (int column = firstColumn; column <= lastColumn; ++column) {
-      const int distance = data.distance_mm[row * lidar::GRID_SIZE + column];
-      if (distance > 0 && (nearest == 0 || distance < nearest)) {
-        nearest = distance;
-      }
-    }
+void processSensor(const char *name, SparkFun_VL53L5CX &sensor,
+                   VL53L5CX_ResultsData &data,
+                   direction_counter::DirectionCounter &counter) {
+  if (!sensor.isDataReady() || !sensor.getRangingData(&data)) { return; }
+  int distances[lidar::ZONE_COUNT];
+  bool valid[lidar::ZONE_COUNT];
+  for (int zone = 0; zone < lidar::ZONE_COUNT; ++zone) {
+    distances[zone] = data.distance_mm[zone];
+    valid[zone] = lidar::validReading(data, zone);
   }
-  return nearest;
-}
-
-void processLane(const char *name, lidar::LaneState &lane,
-                 int firstColumn, int lastColumn, unsigned long now) {
-  const int firstDistance = minimumDistance(data1, firstColumn, lastColumn);
-  const int secondDistance = minimumDistance(data2, firstColumn, lastColumn);
-  const bool firstActive = firstDistance > 0 && firstDistance < lidar::PERSON_THRESHOLD_MM;
-  const bool secondActive = secondDistance > 0 && secondDistance < lidar::PERSON_THRESHOLD_MM;
-  const lidar::Crossing crossing = lidar::updateLane(lane, firstActive, secondActive, now);
-  if (crossing == lidar::NO_CROSSING) {
-    return;
-  }
+  const direction_counter::Direction event = counter.processFrame(distances, valid, millis());
+  if (event == direction_counter::NONE) { return; }
   Serial.print(name);
-  if (crossing == lidar::ENTERING) {
-    Serial.println(": ===> ENTERING (Sensor 1 -> Sensor 2)");
-  } else {
-    Serial.println(": <=== LEAVING (Sensor 2 -> Sensor 1)");
-  }
+  // RIGHT means increasing configured coordinates, not physical room-right.
+  if (event == direction_counter::RIGHT) { Serial.print(": ENTER candidate"); }
+  else { Serial.print(": EXIT candidate"); }
+  Serial.print(" positive=");
+  Serial.print(counter.getRightCount());
+  Serial.print(" negative=");
+  Serial.println(counter.getLeftCount());
 }
 
 void setup() {
@@ -49,23 +37,15 @@ void setup() {
   sensorsReady = lidar::startSensorPair(sensor1, sensor2, 400000);
   if (!sensorsReady) {
     Serial.println("Could not start both sensors. Check wiring and reset.");
+    return;
   }
+  Serial.println("Independent L/R direction test. Keep both views empty for calibration.");
+  Serial.println("Axis and ENTER/EXIT signs must be checked on the installed unit.");
 }
 
 void loop() {
-  if (!sensorsReady) {
-    delay(100);
-    return;
-  }
-  if (!sensor1.isDataReady() || !sensor2.isDataReady()) {
-    return;
-  }
-  if (!sensor1.getRangingData(&data1) || !sensor2.getRangingData(&data2)) {
-    return;
-  }
-
-  const unsigned long now = millis();
-  // Each half of the 8x8 grid keeps its own crossing state.
-  processLane("Lane 1 (Left)", leftLane, 0, 3, now);
-  processLane("Lane 2 (Right)", rightLane, 4, 7, now);
+  if (!sensorsReady) { delay(100); return; }
+  processSensor("L", sensor1, data1, leftCounter);
+  processSensor("R", sensor2, data2, rightCounter);
+  delay(1);
 }

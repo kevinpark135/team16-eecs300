@@ -7,7 +7,7 @@ BUILD_DIR = ../build/lidar-tests
 test: $(BUILD_DIR)/counters_test
 	./$(BUILD_DIR)/counters_test
 
-$(BUILD_DIR)/counters_test: tests/counters_test.cpp directionCounter.hpp laneCounter.hpp
+$(BUILD_DIR)/counters_test: tests/counters_test.cpp directionCounter.hpp
 	mkdir -p $(BUILD_DIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o $@ $(LDFLAGS)
 
