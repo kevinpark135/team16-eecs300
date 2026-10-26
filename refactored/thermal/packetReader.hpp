@@ -1,103 +1,79 @@
-#include <cstdint>
+#pragma once
+
 #include <cstddef>
-#include <functional>
+#include <cstdint>
+#include <cstring>
 #include "floatPacket.hpp"
 
-enum parserState
-{
-    WAIT_HEADER1,
-    WAIT_HEADER2,
-    READ
-};
-
-class packetReader
-{
-private:
-    parserState state = WAIT_HEADER1;
-    size_t bytesRead = 0;
-    floatPacket currentPacket;
-    uint64_t totalBytes = 0;
-    uint64_t header1Candidates = 0;
-    uint64_t headersFound = 0;
-    uint64_t packetsCompleted = 0;
-
-    const uint8_t HEADER1 = 0xAA;
-    const uint8_t HEADER2 = 0xBB;
-    const size_t PAYLOAD_SIZE = 3072;
-
-    std::function<void(const floatPacket &packet)> onReceived;
-
+class packetReader {
 public:
-    explicit packetReader(std::function<void(const floatPacket &packet)> callback)
-    {
-        onReceived = callback;
-    }
-
-    void processRaw(const uint8_t *buffer, size_t size)
-    {
-        totalBytes += size;
-        for (size_t i = 0; i < size; ++i)
-        {
-            uint8_t byte = buffer[i];
-
-            switch (state)
-            {
-            case WAIT_HEADER1:
-                if (byte == HEADER1)
-                {
-                    ++header1Candidates;
-                    state = WAIT_HEADER2;
-                }
-                break;
-            case WAIT_HEADER2:
-                if (byte == HEADER2)
-                {
-                    ++headersFound;
-                    bytesRead = 0;
-                    state = READ;
-                    break;
-                }
-                if (byte == HEADER1)
-                {
-                    ++header1Candidates;
-                    state = WAIT_HEADER2;
-                }
-                else
-                {
-                    state = WAIT_HEADER1;
-                }
-                break;
-            case READ:
-                currentPacket.bytes[bytesRead++] = byte;
-
-                if (bytesRead >= PAYLOAD_SIZE)
-                {
-                    ++packetsCompleted;
-                    onReceived(currentPacket);
-                    state = WAIT_HEADER1;
-                }
-                break;
-            }
-        }
-    }
-
-    uint64_t getTotalBytes() const { return totalBytes; }
-    uint64_t getHeader1Candidates() const { return header1Candidates; }
-    uint64_t getHeadersFound() const { return headersFound; }
-    uint64_t getPacketsCompleted() const { return packetsCompleted; }
-    size_t getPayloadBytesRead() const { return state == READ ? bytesRead : 0; }
-
-    const char *getStateName() const
-    {
-        switch (state)
-        {
+    // MODIFIES: Parser state and counters.
+    // EFFECTS: Returns true only when this byte completes an AA BB + float frame.
+    bool processByte(std::uint8_t byte) {
+        ++totalBytes;
+        switch (state) {
         case WAIT_HEADER1:
-            return "waiting-header-1";
+            if (byte == HEADER1) {
+                ++header1Candidates;
+                state = WAIT_HEADER2;
+            }
+            break;
         case WAIT_HEADER2:
-            return "waiting-header-2";
-        case READ:
-            return "reading-payload";
+            if (byte == HEADER2) {
+                ++headersFound;
+                bytesRead = 0;
+                state = READ_PAYLOAD;
+            } else if (byte == HEADER1) {
+                ++header1Candidates; // AA AA BB still contains a valid header.
+            } else {
+                state = WAIT_HEADER1;
+            }
+            break;
+        case READ_PAYLOAD:
+            payload[bytesRead] = byte;
+            ++bytesRead;
+            if (bytesRead == THERMAL_PAYLOAD_SIZE) {
+                // Copy bytes into floats without reading an inactive union member.
+                std::memcpy(currentPacket.data, payload, sizeof(currentPacket.data));
+                ++packetsCompleted;
+                state = WAIT_HEADER1;
+                return true;
+            }
+            break;
+        }
+        return false;
+    }
+
+    // REQUIRES: A packet has completed; valid until the next completed packet.
+    const floatPacket &packet() const { return currentPacket; }
+    std::uint64_t getTotalBytes() const { return totalBytes; }
+    std::uint64_t getHeader1Candidates() const { return header1Candidates; }
+    std::uint64_t getHeadersFound() const { return headersFound; }
+    std::uint64_t getPacketsCompleted() const { return packetsCompleted; }
+    std::size_t getPayloadBytesRead() const {
+        if (state == READ_PAYLOAD) { return bytesRead; }
+        return 0;
+    }
+
+    const char *getStateName() const {
+        switch (state) {
+        case WAIT_HEADER1: return "waiting-header-1";
+        case WAIT_HEADER2: return "waiting-header-2";
+        case READ_PAYLOAD: return "reading-payload";
         }
         return "unknown";
     }
+
+private:
+    enum State { WAIT_HEADER1, WAIT_HEADER2, READ_PAYLOAD };
+    static const std::uint8_t HEADER1 = 0xAA;
+    static const std::uint8_t HEADER2 = 0xBB;
+    State state = WAIT_HEADER1;
+    std::size_t bytesRead = 0;
+    std::uint8_t payload[THERMAL_PAYLOAD_SIZE] = {};
+    floatPacket currentPacket;
+    std::uint64_t totalBytes = 0;
+    std::uint64_t header1Candidates = 0;
+    std::uint64_t headersFound = 0;
+    std::uint64_t packetsCompleted = 0;
 };

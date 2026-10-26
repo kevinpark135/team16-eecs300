@@ -12,117 +12,90 @@
 */
 
 #include <Arduino.h>
-
 #include <Wire.h>
-
 #include "MLX90640_I2C_Driver.h"
 #include "Thermal_Config.h"
 
-void MLX90640_I2CInit()
-{
+namespace {
+const unsigned int STATUS_REGISTER = 0x8000;
+
+// The sensor sends each 16-bit word most-significant byte first.
+void writeWord(uint16_t word) {
+  Wire.write(static_cast<uint8_t>(word >> 8));
+  Wire.write(static_cast<uint8_t>(word & 0xFF));
+}
+} // namespace
+
+void MLX90640_I2CInit() {
+  // The sketch configures Wire once, with the project's ESP32 pins.
 }
 
-// Read a number of words from startAddress. Store into Data array.
-// Returns 0 only on a complete read; negative values indicate errors.
-int MLX90640_I2CRead(uint8_t _deviceAddress, unsigned int startAddress, unsigned int nWordsRead, uint16_t *data)
-{
-
-  // Caller passes number of 'unsigned ints to read', increase this to 'bytes to read'
-  uint16_t bytesRemaining = nWordsRead * 2;
-
-  // It doesn't look like sequential read works. Do we need to re-issue the address command each time?
-
-  uint16_t dataSpot = 0; // Start at beginning of array
-
-  // Setup a series of chunked I2C_BUFFER_LENGTH byte reads
-  while (bytesRemaining > 0)
-  {
-    Wire.beginTransmission(_deviceAddress);
-    Wire.write(startAddress >> 8);        // MSB
-    Wire.write(startAddress & 0xFF);      // LSB
-    if (Wire.endTransmission(false) != 0) // Do not release bus
-    {
-      return -1; // Sensor did not ACK
+int MLX90640_I2CRead(uint8_t deviceAddress, unsigned int startAddress,
+                     unsigned int wordCount, uint16_t *data) {
+  if (wordCount > 0 && data == nullptr) {
+    return -1;
+  }
+  unsigned int wordsRead = 0;
+  while (wordsRead < wordCount) {
+    unsigned int chunkWords = wordCount - wordsRead;
+    if (chunkWords > I2C_READ_CHUNK_BYTES / 2) {
+      chunkWords = I2C_READ_CHUNK_BYTES / 2;
     }
-
-    uint16_t numberOfBytesToRead = bytesRemaining;
-    if (numberOfBytesToRead > I2C_BUFFER_LENGTH)
-      numberOfBytesToRead = I2C_BUFFER_LENGTH;
-
-    size_t received = Wire.requestFrom((uint8_t)_deviceAddress, (size_t)numberOfBytesToRead);
-    if (received != numberOfBytesToRead || Wire.available() < numberOfBytesToRead)
-    {
-      return -3; // Short read: never consume missing bytes.
+    const unsigned int chunkBytes = chunkWords * 2;
+    Wire.beginTransmission(deviceAddress);
+    writeWord(static_cast<uint16_t>(startAddress));
+    if (Wire.endTransmission(false) != 0) {
+      return -1;
     }
-    for (uint16_t x = 0; x < numberOfBytesToRead / 2; x++)
-    {
-      int msb = Wire.read();
-      int lsb = Wire.read();
-      if (msb < 0 || lsb < 0)
+    const size_t received = Wire.requestFrom(deviceAddress, static_cast<size_t>(chunkBytes));
+    if (received != chunkBytes || Wire.available() < static_cast<int>(chunkBytes)) {
+      return -3;
+    }
+    for (unsigned int i = 0; i < chunkWords; ++i) {
+      const int highByte = Wire.read();
+      const int lowByte = Wire.read();
+      if (highByte < 0 || lowByte < 0) {
         return -3;
-      data[dataSpot++] = (static_cast<uint16_t>(msb) << 8) | lsb;
+      }
+      data[wordsRead] = static_cast<uint16_t>((highByte << 8) | lowByte);
+      ++wordsRead;
     }
-
-    bytesRemaining -= numberOfBytesToRead;
-
-    startAddress += numberOfBytesToRead / 2;
+    startAddress += chunkWords;
   }
-
-  return (0); // Success
+  return 0;
 }
 
-// Set I2C Freq, in kHz
-// MLX90640_I2CFreqSet(1000) sets frequency to 1MHz
-void MLX90640_I2CFreqSet(int freq)
-{
-  // i2c.frequency(1000 * freq);
-  Wire.setClock((long)1000 * freq);
+void MLX90640_I2CFreqSet(int frequencyKHz) {
+  Wire.setClock(static_cast<unsigned long>(frequencyKHz) * 1000UL);
 }
 
-// Write two bytes to a two byte address
-int MLX90640_I2CWrite(uint8_t _deviceAddress, unsigned int writeAddress, uint16_t data)
-{
-  Wire.beginTransmission((uint8_t)_deviceAddress);
-  Wire.write(writeAddress >> 8);   // MSB
-  Wire.write(writeAddress & 0xFF); // LSB
-  Wire.write(data >> 8);           // MSB
-  Wire.write(data & 0xFF);         // LSB
-  if (Wire.endTransmission() != 0)
-  {
-    // Sensor did not ACK
-    return (-1);
+int MLX90640_I2CWrite(uint8_t deviceAddress, unsigned int writeAddress, uint16_t data) {
+  Wire.beginTransmission(deviceAddress);
+  writeWord(static_cast<uint16_t>(writeAddress));
+  writeWord(data);
+  if (Wire.endTransmission() != 0) {
+    return -1;
   }
-
-  uint16_t dataCheck;
-  int error = MLX90640_I2CRead(_deviceAddress, writeAddress, 1, &dataCheck);
-  if (error != 0)
-    return error;
-
+  uint16_t readback = 0;
+  const int status = MLX90640_I2CRead(deviceAddress, writeAddress, 1, &readback);
+  if (status != 0) {
+    return status;
+  }
 #if THERMAL_DIAGNOSTIC_MODE
-  if (writeAddress == 0x8000)
-  {
-    static uint8_t statusWriteLogs = 0;
-    if (statusWriteLogs < 8)
-    {
-      Serial.print("[I2C write] address=0x");
-      Serial.print(writeAddress, HEX);
-      Serial.print(" wrote=0x");
-      Serial.print(data, HEX);
-      Serial.print(" read=0x");
-      Serial.println(dataCheck, HEX);
-      ++statusWriteLogs;
-    }
+  static uint8_t statusWriteLogs = 0;
+  if (writeAddress == STATUS_REGISTER && statusWriteLogs < 8) {
+    Serial.print("[I2C write] address=0x");
+    Serial.print(writeAddress, HEX);
+    Serial.print(" wrote=0x");
+    Serial.print(data, HEX);
+    Serial.print(" read=0x");
+    Serial.println(readback, HEX);
+    ++statusWriteLogs;
   }
 #endif
-
-  // 0x8000 is a dynamic status register. Bits include the last measured
-  // subpage and the new-data flag, so equality after writing 0x0030 is not a
-  // valid write check. Keep the read itself to detect ACK and short-read
-  // failures, but only compare stable configuration registers.
-  if (writeAddress != 0x8000 && dataCheck != data)
-  {
+  // The sensor changes its status bits itself; only stable registers can match.
+  if (writeAddress != STATUS_REGISTER && readback != data) {
     return -2;
   }
-
-  return (0); // Success
+  return 0;
 }

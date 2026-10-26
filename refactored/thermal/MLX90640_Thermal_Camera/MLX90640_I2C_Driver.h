@@ -14,43 +14,19 @@
    limitations under the License.
 
 */
-#ifndef _MLX90640_I2C_Driver_H_
-#define _MLX90640_I2C_Driver_H_
+#pragma once
 
 #include <stdint.h>
 
-//Define the size of the I2C buffer based on the platform the user has
-//-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-#if defined(__AVR_ATmega328P__) || defined(__AVR_ATmega168__)
+// A small, even chunk fits the ESP32 Wire receive buffer.
+const unsigned int I2C_READ_CHUNK_BYTES = 32;
 
-//I2C_BUFFER_LENGTH is defined in Wire.H
-#define I2C_BUFFER_LENGTH BUFFER_LENGTH
-
-#elif defined(__SAMD21G18A__)
-
-//SAMD21 uses RingBuffer.h
-#define I2C_BUFFER_LENGTH SERIAL_BUFFER_SIZE
-
-#elif __MK20DX256__
-//Teensy
-
-#elif ARDUINO_ARCH_ESP32
-//Keep chunks even and within the ESP32 Wire receive buffer.
-#ifndef I2C_BUFFER_LENGTH
-#define I2C_BUFFER_LENGTH 32
-#endif
-
-#else
-
-//The catch-all default is 32
-#define I2C_BUFFER_LENGTH 32
-
-#endif
-//-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-
-
-void MLX90640_I2CInit(void);
-int MLX90640_I2CRead(uint8_t slaveAddr, unsigned int startAddress, unsigned int nWordsRead, uint16_t *data);
-int MLX90640_I2CWrite(uint8_t slaveAddr, unsigned int writeAddress, uint16_t data);
-void MLX90640_I2CFreqSet(int freq);
-#endif
+void MLX90640_I2CInit();
+// REQUIRES: data has room for wordCount words; addresses are sensor word addresses.
+// MODIFIES: data and Wire.
+// EFFECTS: Returns 0 on success, -1 on a bus error, or -3 on a short read.
+int MLX90640_I2CRead(uint8_t deviceAddress, unsigned int startAddress,
+                     unsigned int wordCount, uint16_t *data);
+// EFFECTS: Returns 0 on success, or -1/-2/-3 for bus/readback/read errors.
+int MLX90640_I2CWrite(uint8_t deviceAddress, unsigned int writeAddress, uint16_t data);
+void MLX90640_I2CFreqSet(int frequencyKHz);

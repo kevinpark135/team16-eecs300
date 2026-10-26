@@ -2,11 +2,13 @@ CXX = clang++
 CXXFLAGS = -std=c++17 -O2 -Wall -Wextra -Wpedantic
 SDL2_CONFIG ?= sdl2-config
 BUILD_DIR = build
+VIEWER ?= thermaltest
 
 .PHONY: all test test-sanitize clean
-all: thermaltest
+all: $(VIEWER)
 
-thermaltest: thermaltest.cpp packetReader.hpp floatPacket.hpp blobDetector.hpp
+$(VIEWER): thermaltest.cpp packetReader.hpp floatPacket.hpp blobDetector.hpp
+	mkdir -p $(dir $(VIEWER))
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $$($(SDL2_CONFIG) --cflags) thermaltest.cpp -o $@ $(LDFLAGS) $$($(SDL2_CONFIG) --libs)
 
 $(BUILD_DIR):
@@ -23,4 +25,4 @@ test-sanitize: | $(BUILD_DIR)
 	./$(BUILD_DIR)/blobDetector_test_sanitize
 
 clean:
-	rm -f thermaltest $(BUILD_DIR)/blobDetector_test $(BUILD_DIR)/blobDetector_test_sanitize
+	rm -f $(VIEWER) $(BUILD_DIR)/blobDetector_test $(BUILD_DIR)/blobDetector_test_sanitize
