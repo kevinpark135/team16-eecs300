@@ -1,0 +1,17 @@
+
+# macOS metadata
+.DS_Store
+.DS_Store?
+._*
+__MACOSX/
+
+# Compiled thermal viewer
+/thermal/thermaltest
+
+# Compiler output
+*.o
+*.obj
+*.dSYM/
+
+# Code reference files
+/eecs280/

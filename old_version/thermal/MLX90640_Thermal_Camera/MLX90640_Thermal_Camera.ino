@@ -5,19 +5,12 @@
 #include "MLX90640_I2C_Driver.h"
 #include "Thermal_Config.h"
 
-const float EMISSIVITY = 0.95f;
-const float AMBIENT_SHIFT_C = 8.0f;
-const int PIXEL_COUNT = 32 * 24;
-const int EEPROM_WORD_COUNT = 832;
-const int FRAME_WORD_COUNT = 834;
-const int SDA_PIN = 21;
-const int SCL_PIN = 22;
-const unsigned long I2C_FREQUENCY_HZ = 400000;
-const byte REFRESH_RATE_SETTING = 0x04; // Sensor register code for 8 Hz.
+#define EMISSIVITY 0.95
+#define TA_SHIFT 8
 
 paramsMLX90640 mlx90640;
 const byte MLX90640_address = 0x33;
-static float tempValues[PIXEL_COUNT] = {};
+static float tempValues[32 * 24];
 static_assert(sizeof(tempValues) == 3072, "Protocol requires 768 32-bit floats");
 static bool sensorReady = false;
 static const char *sensorFailureMessage = nullptr;
@@ -58,7 +51,7 @@ void reportTemperatureFrame()
   float minTemperature = INFINITY;
   float maxTemperature = -INFINITY;
   uint16_t finiteCount = 0;
-  for (uint16_t i = 0; i < PIXEL_COUNT; ++i)
+  for (uint16_t i = 0; i < 768; ++i)
   {
     if (!isfinite(tempValues[i]))
       continue;
@@ -97,7 +90,7 @@ int connectSensor()
       delay(10);
     }
 
-    if (!Wire.begin(SDA_PIN, SCL_PIN, I2C_FREQUENCY_HZ))
+    if (!Wire.begin(21, 22, 400000))
     {
       status = -1;
     }
@@ -125,52 +118,6 @@ int connectSensor()
   return status;
 }
 
-// MODIFIES: Sensor settings and calibration parameters.
-// EFFECTS: Returns false if calibration or refresh-rate validation fails.
-bool loadCalibrationAndSettings()
-{
-  uint16_t eeMLX90640[EEPROM_WORD_COUNT];
-  int status = MLX90640_DumpEE(MLX90640_address, eeMLX90640);
-  if (status != 0)
-  {
-    failSensorInitialization("EEPROM read failed", status);
-    return false;
-  }
-#if THERMAL_DIAGNOSTIC_MODE
-  Serial.println("[setup] EEPROM read succeeded");
-#endif
-
-  status = MLX90640_ExtractParameters(eeMLX90640, &mlx90640);
-  if (status != 0)
-  {
-    failSensorInitialization("Parameter extraction failed", status);
-    return false;
-  }
-#if THERMAL_DIAGNOSTIC_MODE
-  Serial.println("[setup] calibration parameters extracted");
-#endif
-
-  status = MLX90640_SetRefreshRate(MLX90640_address, REFRESH_RATE_SETTING);
-  if (status != 0)
-  {
-    failSensorInitialization("Refresh rate setup failed", status);
-    return false;
-  }
-  const int refreshRate = MLX90640_GetRefreshRate(MLX90640_address);
-  if (refreshRate < 0)
-  {
-    failSensorInitialization("Refresh rate readback failed", refreshRate);
-    return false;
-  }
-  if (refreshRate != REFRESH_RATE_SETTING)
-  {
-    failSensorInitialization("Refresh rate readback mismatch", refreshRate);
-    return false;
-  }
-
-  return true;
-}
-
 void setup()
 {
   Serial.begin(115200);
@@ -190,28 +137,60 @@ void setup()
   Serial.println("[setup] sensor detected");
 #endif
 
-  sensorReady = loadCalibrationAndSettings();
-  if (!sensorReady)
+  uint16_t eeMLX90640[832];
+  status = MLX90640_DumpEE(MLX90640_address, eeMLX90640);
+  if (status != 0)
   {
+    failSensorInitialization("EEPROM read failed", status);
+    return;
+  }
+#if THERMAL_DIAGNOSTIC_MODE
+  Serial.println("[setup] EEPROM read succeeded");
+#endif
+
+  status = MLX90640_ExtractParameters(eeMLX90640, &mlx90640);
+  if (status != 0)
+  {
+    failSensorInitialization("Parameter extraction failed", status);
+    return;
+  }
+#if THERMAL_DIAGNOSTIC_MODE
+  Serial.println("[setup] calibration parameters extracted");
+#endif
+
+  status = MLX90640_SetRefreshRate(MLX90640_address, 0x04);
+  if (status != 0)
+  {
+    failSensorInitialization("Refresh rate setup failed", status);
+    return;
+  }
+  const int refreshRate = MLX90640_GetRefreshRate(MLX90640_address);
+  if (refreshRate < 0)
+  {
+    failSensorInitialization("Refresh rate readback failed", refreshRate);
+    return;
+  }
+  if (refreshRate != 0x04)
+  {
+    failSensorInitialization("Refresh rate readback mismatch", refreshRate);
     return;
   }
 
+  sensorReady = true;
 #if THERMAL_DIAGNOSTIC_MODE
   Serial.println("[setup] refresh rate=8Hz");
   Serial.println("[setup] sensor ready; collecting subpages 0 and 1");
 #endif
 }
 
-// MODIFIES: tempValues, using both halves of the sensor image.
-// EFFECTS: Returns true only after subpages 0 and 1 have both arrived.
-bool readTemperatureFrame()
+void readTempValues()
 {
-  bool receivedSubpage[2] = {false, false};
+  uint8_t subpages = 0;
   const byte maxAttempts = 6;
 
   for (byte attempt = 0; attempt < maxAttempts; ++attempt)
   {
-    uint16_t frame[FRAME_WORD_COUNT];
+    uint16_t frame[834];
     const int status = MLX90640_GetFrameData(MLX90640_address, frame);
     if (status < 0)
     {
@@ -233,29 +212,25 @@ bool readTemperatureFrame()
 
     const float ambientTemperature = MLX90640_GetTa(frame, &mlx90640);
     MLX90640_CalculateTo(frame, &mlx90640, EMISSIVITY,
-                         ambientTemperature - AMBIENT_SHIFT_C, tempValues);
-    receivedSubpage[status] = true;
-    if (receivedSubpage[0] && receivedSubpage[1])
+                         ambientTemperature - TA_SHIFT, tempValues);
+    subpages |= static_cast<uint8_t>(1U << status);
+
+    if (subpages == 0x03)
     {
-      return true;
+      ++completedFrames;
+#if THERMAL_DIAGNOSTIC_MODE
+      reportTemperatureFrame();
+#else
+      // Keep the header and payload adjacent. Binary mode emits no text logs.
+      const uint8_t header[] = {0xAA, 0xBB};
+      Serial.write(header, sizeof(header));
+      Serial.write(reinterpret_cast<const uint8_t *>(tempValues), sizeof(tempValues));
+#endif
+      return;
     }
   }
 
   reportError("Incomplete frame discarded", -10);
-  return false;
-}
-
-void sendTemperatureFrame()
-{
-  ++completedFrames;
-#if THERMAL_DIAGNOSTIC_MODE
-  reportTemperatureFrame();
-#else
-  const uint8_t header[] = {0xAA, 0xBB};
-  Serial.write(header, sizeof(header));
-  // Serial.write needs bytes; this cast exposes the existing float storage.
-  Serial.write(reinterpret_cast<const uint8_t *>(tempValues), sizeof(tempValues));
-#endif
 }
 
 void loop()
@@ -268,9 +243,6 @@ void loop()
     return;
   }
 
-  if (readTemperatureFrame())
-  {
-    sendTemperatureFrame();
-  }
+  readTempValues();
   delay(30);
 }

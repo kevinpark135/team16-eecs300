@@ -71,7 +71,7 @@ def main():
     parser.add_argument("--fqbn", default="esp32:esp32:esp32")
     parser.add_argument("--cli", default=shutil.which("arduino-cli") or
                         "/Applications/Arduino IDE.app/Contents/Resources/app/lib/backend/resources/arduino-cli")
-    parser.add_argument("--target", choices=["all", "integrated", "lidar", "thermal"], default="all")
+    parser.add_argument("--target", choices=["all", "integrated", "lidar", "single-lidar", "thermal"], default="all")
     args = parser.parse_args()
     config = prepare_config()
     environment = os.environ.copy()
@@ -82,6 +82,9 @@ def main():
     sketches = []
     if args.target in {"all", "lidar"}:
         source = ROOT / "lidar/2LiDARs_direction/2LiDARs_direction.ino"
+        sketches.append((stage_lidar(source), source.stem, []))
+    if args.target in {"all", "single-lidar"}:
+        source = ROOT / "lidar/direction_sensing/direction_sensing.ino"
         sketches.append((stage_lidar(source), source.stem, []))
     if args.target in {"all", "thermal"}:
         source = ROOT / "thermal/MLX90640_Thermal_Camera"

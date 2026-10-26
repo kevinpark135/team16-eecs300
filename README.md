@@ -1,6 +1,18 @@
 # Sensor Code
 
-This directory contains the integrated ESP32 counter, a standalone dual-LiDAR program, and the thermal firmware and desktop viewer. Shared headers and driver files are required by these programs.
+The repository root contains the active integrated ESP32 counter, standalone single- and dual-LiDAR programs, and the thermal firmware and desktop viewer. Shared headers and driver files are required by these programs. The previous root-level sensor code is preserved under [old_version/lidar](old_version/lidar/) and [old_version/thermal](old_version/thermal/).
+
+```text
+team16-eecs300/
+├── integrated/                 # Active combined sensor counter
+├── lidar/
+│   ├── 2LiDARs_direction/       # Active dual-LiDAR grid and IN/OUT counts
+│   └── direction_sensing/      # Original standalone single-LiDAR sketch
+├── thermal/                    # Active thermal firmware and desktop viewer
+├── old_version/                # Previous root-level lidar/ and thermal/
+├── build_firmware.py
+└── Makefile
+```
 
 ## Integrated ESP32 Counter
 
@@ -9,6 +21,12 @@ This directory contains the integrated ESP32 counter, a standalone dual-LiDAR pr
 | [integrated.ino](integrated/integrated.ino) | Reads both LiDARs and the thermal camera on one ESP32, combines their results, and prints passage decisions and occupancy totals. |
 | [passageCounter.hpp](integrated/passageCounter.hpp) | Applies the thermal-count decision rules, matches direction events within a time window, prevents repeated counts, and waits for the scene to clear. |
 | [systemConfig.hpp](integrated/systemConfig.hpp) | Defines timing, thermal stability, and starting occupancy settings. |
+
+## Single LiDAR
+
+| File | Role |
+| --- | --- |
+| [direction_sensing.ino](lidar/direction_sensing/direction_sensing.ino) | Original single-LiDAR sketch, copied without code changes from the previous lidar directory. Learns a background, prints an 8x8 distance grid, and accumulates LEFT/RIGHT direction counts. Its separate sketch folder prevents Arduino from combining it with the dual-LiDAR program. |
 
 ## Dual LiDAR
 
@@ -49,3 +67,16 @@ This directory contains the integrated ESP32 counter, a standalone dual-LiDAR pr
 | [thermal/Makefile](thermal/Makefile) | Compiles the SDL viewer into build/thermaltest. |
 | [build_firmware.py](build_firmware.py) | Stages the required shared files into valid Arduino sketch folders under build/sketches and compiles the selected firmware. Does not upload to hardware. |
 | [.gitignore](.gitignore) | Excludes regenerated build output from Git. |
+
+Run these commands from the repository root:
+
+```sh
+make                                             # Desktop viewer: build/thermaltest
+python3 build_firmware.py --target lidar          # Dual LiDAR
+python3 build_firmware.py --target single-lidar   # Single LiDAR
+python3 build_firmware.py --target integrated     # Combined sensor counter
+python3 build_firmware.py --target thermal        # Thermal binary and diagnostic modes
+make firmware                                    # All five firmware builds
+```
+
+Firmware commands compile without uploading. To use Arduino IDE, open the `.ino` file inside the matching standalone sketch folder. The integrated sketch uses shared files staged by `build_firmware.py` under `build/sketches/integrated/`.

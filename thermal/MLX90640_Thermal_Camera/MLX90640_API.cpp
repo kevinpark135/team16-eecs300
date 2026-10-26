@@ -42,70 +42,47 @@ int MLX90640_DumpEE(uint8_t slaveAddr, uint16_t *eeData)
      return MLX90640_I2CRead(slaveAddr, 0x2400, 832, eeData);
 }
 
+// Returns 2 when no subpage is ready; never waits for the next measurement.
+int MLX90640_TryGetFrameData(uint8_t slaveAddr, uint16_t *frameData)
+{
+    uint16_t statusRegister = 0;
+    int error = MLX90640_I2CRead(slaveAddr, 0x8000, 1, &statusRegister);
+    if (error != 0) { return error; }
+    if ((statusRegister & 0x0008) == 0) { return 2; }
+
+    // Retry only if a newer subpage arrived during this transfer.
+    for (int attempt = 0; attempt < 5; ++attempt)
+    {
+        error = MLX90640_I2CWrite(slaveAddr, 0x8000, 0x0030);
+        if (error != 0) { return error; }
+        error = MLX90640_I2CRead(slaveAddr, 0x0400, 832, frameData);
+        if (error != 0) { return error; }
+        error = MLX90640_I2CRead(slaveAddr, 0x8000, 1, &statusRegister);
+        if (error != 0) { return error; }
+        if ((statusRegister & 0x0008) == 0)
+        {
+            uint16_t controlRegister = 0;
+            error = MLX90640_I2CRead(slaveAddr, 0x800D, 1, &controlRegister);
+            if (error != 0) { return error; }
+            frameData[832] = controlRegister;
+            frameData[833] = statusRegister & 0x0001;
+            return frameData[833];
+        }
+    }
+    return -8;
+}
+
 int MLX90640_GetFrameData(uint8_t slaveAddr, uint16_t *frameData)
 {
-    uint16_t dataReady = 1;
-    uint16_t controlRegister1;
-    uint16_t statusRegister;
-    int error = 1;
-    uint8_t cnt = 0;
-    
     const unsigned long start = millis();
-    dataReady = 0;
-    while(dataReady == 0)
+    while (true)
     {
-        error = MLX90640_I2CRead(slaveAddr, 0x8000, 1, &statusRegister);
-        if(error != 0)
-        {
-            return error;
-        }    
-        dataReady = statusRegister & 0x0008;
-        if (dataReady == 0)
-        {
-            // 0.5 Hz (the slowest setting) needs up to 2 seconds.
-            if (millis() - start >= 2500UL) return -9;
-            delay(1);
-        }
-    }       
-        
-    while(dataReady != 0 && cnt < 5)
-    { 
-        error = MLX90640_I2CWrite(slaveAddr, 0x8000, 0x0030);
-        if(error != 0)
-        {
-            return error;
-        }
-            
-        error = MLX90640_I2CRead(slaveAddr, 0x0400, 832, frameData); 
-        if(error != 0)
-        {
-            return error;
-        }
-                   
-        error = MLX90640_I2CRead(slaveAddr, 0x8000, 1, &statusRegister);
-        if(error != 0)
-        {
-            return error;
-        }    
-        dataReady = statusRegister & 0x0008;
-        cnt = cnt + 1;
+        const int status = MLX90640_TryGetFrameData(slaveAddr, frameData);
+        if (status != 2) { return status; }
+        // Preserve the standalone sketch's bounded wait, including 0.5 Hz mode.
+        if (millis() - start >= 2500UL) { return -9; }
+        delay(1);
     }
-    
-    if(dataReady != 0)
-    {
-        return -8;
-    }    
-    
-    error = MLX90640_I2CRead(slaveAddr, 0x800D, 1, &controlRegister1);
-    
-    if(error != 0)
-    {
-        return error;
-    }
-    
-    frameData[832] = controlRegister1;
-    frameData[833] = statusRegister & 0x0001;
-    return frameData[833];    
 }
 
 int MLX90640_ExtractParameters(uint16_t *eeData, paramsMLX90640 *mlx90640)

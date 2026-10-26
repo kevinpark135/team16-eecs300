@@ -15,3 +15,5 @@ __MACOSX/
 
 # Code reference files
 /eecs280/
+
+/build/

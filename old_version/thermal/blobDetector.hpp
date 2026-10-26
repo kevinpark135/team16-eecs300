@@ -7,16 +7,16 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <vector>
 
 namespace thermal
 {
-const int kWidth = 32;
-const int kHeight = 24;
-const std::size_t kPixelCount = kWidth * kHeight;
+inline constexpr int kWidth = 32;
+inline constexpr int kHeight = 24;
+inline constexpr std::size_t kPixelCount = kWidth * kHeight;
 using Clock = std::chrono::steady_clock;
-// std::array is a fixed-size array with size(), fill(), and data().
 using TemperatureFrame = std::array<float, kPixelCount>;
 
 struct Roi
@@ -92,10 +92,9 @@ struct Blob
 struct FrameResult
 {
     std::uint64_t frameNumber = 0; // Complete packets processed; survives reset.
-    // Caller-supplied monotonic observation time, NOT the sensor capture timestamp.
+    // Host monotonic packet reception time, NOT the sensor capture timestamp.
     // No timestamp exists before the first packet or immediately after reset.
-    bool hasReceivedFrame = false;
-    Clock::time_point receivedAt{};
+    std::optional<Clock::time_point> receivedAt;
     DetectionStatus status = DetectionStatus::Waiting;
     std::size_t calibrationFramesCollected = 0;
     bool backgroundReady = false;
@@ -116,16 +115,12 @@ struct FrameResult
         return status == DetectionStatus::Ready || status == DetectionStatus::Degraded;
     }
 
-    // MODIFIES: count only when a current detection is available.
-    // EFFECTS: Returns false for waiting, calibration, invalid, or stale data.
-    bool getBlobCount(std::size_t &count) const
+    // nullopt distinguishes unavailable evidence from a measured count of zero.
+    std::optional<std::size_t> blobCount() const
     {
         if (!hasDetection())
-        {
-            return false;
-        }
-        count = blobs.size();
-        return true;
+            return std::nullopt;
+        return blobs.size();
     }
 };
 
@@ -135,7 +130,7 @@ public:
     explicit BlobDetector(DetectorConfig config = {}, Clock::time_point startedAt = Clock::now())
         : config_(config), awaitingSince_(startedAt)
     {
-        const Roi &roi = config_.roi;
+        const auto &roi = config_.roi;
         if (config_.calibrationFrames == 0 || config_.minBlobArea == 0 ||
             !std::isfinite(config_.deltaThresholdC) || config_.deltaThresholdC < 0.0f ||
             config_.staleTimeout.count() <= 0 ||
@@ -150,8 +145,6 @@ public:
     const DetectorConfig &config() const { return config_; }
     const FrameResult &latestResult() const { return lastResult_; }
 
-    // MODIFIES: Calibration state and the latest frame result.
-    // EFFECTS: Processes Celsius values once, independently of display colors.
     const FrameResult &processFrame(const float (&temperatureC)[kPixelCount],
                                     Clock::time_point receivedAt = Clock::now())
     {
@@ -166,10 +159,8 @@ public:
 
     void reset(Clock::time_point resetAt = Clock::now())
     {
-        for (std::size_t i = 0; i < kPixelCount; ++i)
-        {
-            backgroundSamples_[i].clear();
-        }
+        for (auto &samples : backgroundSamples_)
+            samples.clear();
         backgroundC_.fill(0.0f);
         backgroundValid_.fill(false);
         calibrationFramesCollected_ = 0;
@@ -184,11 +175,7 @@ public:
     FrameResult snapshot(Clock::time_point now = Clock::now()) const
     {
         FrameResult result = lastResult_;
-        Clock::time_point since = awaitingSince_;
-        if (result.hasReceivedFrame)
-        {
-            since = result.receivedAt;
-        }
+        const auto since = result.receivedAt.value_or(awaitingSince_);
         if (now - since >= config_.staleTimeout)
         {
             result.status = DetectionStatus::Stale;
@@ -200,7 +187,7 @@ public:
 private:
     bool insideRoi(int x, int y) const
     {
-        const Roi &roi = config_.roi;
+        const auto &roi = config_.roi;
         return x >= roi.x && x < roi.x + roi.width &&
                y >= roi.y && y < roi.y + roi.height;
     }
@@ -209,16 +196,14 @@ private:
     {
         for (std::size_t i = 0; i < kPixelCount; ++i)
         {
-            std::vector<float> &samples = backgroundSamples_[i];
+            auto &samples = backgroundSamples_[i];
             if (samples.size() >= config_.minimumBackgroundSamples())
             {
                 std::sort(samples.begin(), samples.end());
                 const std::size_t middle = samples.size() / 2;
-                double median = samples[middle];
-                if (samples.size() % 2 == 0)
-                {
-                    median = (static_cast<double>(samples[middle - 1]) + samples[middle]) / 2.0;
-                }
+                const double median = samples.size() % 2 != 0
+                    ? samples[middle]
+                    : (static_cast<double>(samples[middle - 1]) + samples[middle]) / 2.0;
                 backgroundC_[i] = static_cast<float>(median);
                 backgroundValid_[i] = true;
             }
@@ -230,27 +215,50 @@ private:
     const FrameResult &processPixels(const float *temperatureC, Clock::time_point receivedAt)
     {
         lastResult_ = FrameResult{}; // A new empty frame immediately replaces old blobs.
-        FrameResult &result = lastResult_;
+        auto &result = lastResult_;
         result.frameNumber = ++framesProcessed_;
         result.receivedAt = receivedAt;
-        result.hasReceivedFrame = true;
         result.roiPixelCount = static_cast<std::size_t>(config_.roi.width * config_.roi.height);
         for (std::size_t i = 0; i < kPixelCount; ++i)
-        {
-            if (std::isfinite(temperatureC[i]))
-            {
-                ++result.finitePixelCount;
-            }
-        }
+            result.finitePixelCount += std::isfinite(temperatureC[i]) ? 1 : 0;
         result.invalidPixelCount = kPixelCount - result.finitePixelCount;
 
         if (!backgroundReady_)
         {
-            collectBackground(temperatureC, result);
+            for (std::size_t i = 0; i < kPixelCount; ++i)
+            {
+                if (!std::isfinite(temperatureC[i]))
+                    continue;
+                backgroundSamples_[i].push_back(temperatureC[i]);
+                if (insideRoi(static_cast<int>(i % kWidth), static_cast<int>(i / kWidth)))
+                    ++result.validPixelCount;
+            }
+            ++calibrationFramesCollected_;
+            if (calibrationFramesCollected_ >= config_.calibrationFrames)
+                finishCalibration();
+            // Calibration frames never produce a detection, including the last.
+            result.status = result.validPixelCount == 0
+                ? DetectionStatus::Invalid : DetectionStatus::Calibrating;
         }
         else
         {
-            detectForeground(temperatureC, result);
+            std::array<bool, kPixelCount> foreground{};
+            for (std::size_t i = 0; i < kPixelCount; ++i)
+            {
+                if (!insideRoi(static_cast<int>(i % kWidth), static_cast<int>(i / kWidth)))
+                    continue;
+                if (!backgroundValid_[i])
+                    ++result.backgroundUnavailablePixelCount;
+                if (!backgroundValid_[i] || !std::isfinite(temperatureC[i]))
+                    continue;
+                ++result.validPixelCount;
+                foreground[i] = static_cast<double>(temperatureC[i]) - backgroundC_[i]
+                                >= config_.deltaThresholdC;
+            }
+            findComponents(foreground, temperatureC, result.blobs);
+            result.status = result.validPixelCount == 0 ? DetectionStatus::Invalid
+                : (result.invalidPixelCount != 0 || result.validPixelCount < result.roiPixelCount)
+                    ? DetectionStatus::Degraded : DetectionStatus::Ready;
         }
 
         result.calibrationFramesCollected = calibrationFramesCollected_;
@@ -258,69 +266,6 @@ private:
         result.excludedPixelCount = result.roiPixelCount - result.validPixelCount;
         result.dataDegraded = result.invalidPixelCount != 0 || result.excludedPixelCount != 0;
         return result;
-    }
-
-    void collectBackground(const float *temperatureC, FrameResult &result)
-    {
-        for (std::size_t i = 0; i < kPixelCount; ++i)
-        {
-            if (!std::isfinite(temperatureC[i]))
-            {
-                continue;
-            }
-            backgroundSamples_[i].push_back(temperatureC[i]);
-            if (insideRoi(static_cast<int>(i % kWidth), static_cast<int>(i / kWidth)))
-            {
-                ++result.validPixelCount;
-            }
-        }
-        ++calibrationFramesCollected_;
-        if (calibrationFramesCollected_ >= config_.calibrationFrames)
-        {
-            finishCalibration();
-        }
-        // The final calibration frame still does not produce detections.
-        result.status = DetectionStatus::Calibrating;
-        if (result.validPixelCount == 0)
-        {
-            result.status = DetectionStatus::Invalid;
-        }
-    }
-
-    void detectForeground(const float *temperatureC, FrameResult &result) const
-    {
-        std::array<bool, kPixelCount> foreground{};
-        for (std::size_t i = 0; i < kPixelCount; ++i)
-        {
-            if (!insideRoi(static_cast<int>(i % kWidth), static_cast<int>(i / kWidth)))
-            {
-                continue;
-            }
-            if (!backgroundValid_[i])
-            {
-                ++result.backgroundUnavailablePixelCount;
-            }
-            if (!backgroundValid_[i] || !std::isfinite(temperatureC[i]))
-            {
-                continue;
-            }
-            ++result.validPixelCount;
-            foreground[i] = static_cast<double>(temperatureC[i]) - backgroundC_[i]
-                            >= config_.deltaThresholdC;
-        }
-        findComponents(foreground, temperatureC, result.blobs);
-        if (result.validPixelCount == 0)
-        {
-            result.status = DetectionStatus::Invalid;
-        }
-        else if (result.invalidPixelCount != 0 || result.validPixelCount < result.roiPixelCount)
-        {
-            result.status = DetectionStatus::Degraded;
-        }
-        else
-        {
-            result.status = DetectionStatus::Ready;
-        }
     }
 
     void findComponents(std::array<bool, kPixelCount> &foreground,
@@ -344,10 +289,9 @@ private:
             double sumY = 0.0;
             double sumTemperature = 0.0;
 
-            // Breadth-first search groups all eight touching neighbors.
             while (head < tail)
             {
-                const std::size_t index = queue[head++];
+                const auto index = queue[head++];
                 const int x = static_cast<int>(index % kWidth);
                 const int y = static_cast<int>(index / kWidth);
                 ++blob.areaPixels;
@@ -370,7 +314,7 @@ private:
                         const int ny = y + dy;
                         if (nx < 0 || nx >= kWidth || ny < 0 || ny >= kHeight)
                             continue;
-                        const std::size_t neighbor = static_cast<std::size_t>(ny * kWidth + nx);
+                        const auto neighbor = static_cast<std::size_t>(ny * kWidth + nx);
                         if (foreground[neighbor])
                         {
                             foreground[neighbor] = false; // Visit once, on enqueue.
