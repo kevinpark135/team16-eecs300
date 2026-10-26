@@ -162,8 +162,8 @@ void initializeWaitingPattern()
         {
             const bool alternate = ((row / 2) + (column / 2)) % 2 != 0;
             gPixels[row * 32 + column] = alternate
-                                                    ? SDL_Color{72, 96, 160, 255}
-                                                    : SDL_Color{32, 48, 96, 255};
+                                             ? SDL_Color{72, 96, 160, 255}
+                                             : SDL_Color{32, 48, 96, 255};
         }
     }
 }
@@ -173,7 +173,8 @@ void onReceived(const floatPacket &packet)
     // Exactly once per complete packet, using raw Celsius values before coloring.
     const auto &result = gBlobDetector.processFrame(packet.data, thermal::Clock::now());
     const auto receivedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-        result.receivedAt->time_since_epoch()).count();
+                                result.receivedAt->time_since_epoch())
+                                .count();
     std::cerr << "[thermal] frame=" << result.frameNumber
               << " received_monotonic_ms=" << receivedMs
               << " status=" << thermal::statusName(result.status)
