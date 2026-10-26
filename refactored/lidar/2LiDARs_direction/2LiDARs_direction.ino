@@ -52,9 +52,9 @@ void processSensor(const char *name, SparkFun_VL53L5CX &sensor,
   if (event == direction_counter::NONE) { return; }
   Serial.print("[event] ");
   Serial.print(name);
-  // Signs refer to configured grid coordinates until mounting is calibrated.
-  if (event == direction_counter::RIGHT) { Serial.println(" POSITIVE"); }
-  else { Serial.println(" NEGATIVE"); }
+  // Match the integrated sketch's configured RIGHT=ENTER, LEFT=EXIT mapping.
+  if (event == direction_counter::RIGHT) { Serial.println(" IN"); }
+  else { Serial.println(" OUT"); }
 }
 
 void printStatus(const char *name, const SensorStats &stats,
@@ -81,12 +81,58 @@ void printStatus(const char *name, const SensorStats &stats,
   Serial.print(" object=");
   if (fresh) { Serial.print(counter.objectPresent() ? "1" : "0"); }
   else { Serial.print("--"); }
-  Serial.print(" positive=");
+  Serial.print(" IN=");
   Serial.print(counter.getRightCount());
-  Serial.print(" negative=");
+  Serial.print(" OUT=");
   Serial.print(counter.getLeftCount());
   Serial.print(" readFailures=");
   Serial.println(stats.readFailures);
+}
+
+void printGridRow(const VL53L5CX_ResultsData &data, const SensorStats &stats,
+                  int row, unsigned long now) {
+  const bool fresh = stats.frames > 0 && now - stats.lastFrameAt <= FRAME_STALE_MS;
+  for (int column = 0; column < lidar::GRID_SIZE; ++column) {
+    const int zone = row * lidar::GRID_SIZE + column;
+    if (!fresh) {
+      Serial.print("   -- ");
+    } else if (!lidar::validReading(data, zone)) {
+      Serial.print("    X ");
+    } else {
+      // Six characters per cell also keep five-digit distances aligned.
+      const int distance = data.distance_mm[zone];
+      if (distance < 10000) { Serial.print(' '); }
+      lidar::printFormattedDistance(distance);
+    }
+  }
+}
+
+void printRunningCount(const char *name, const direction_counter::DirectionCounter &counter) {
+  Serial.print(name);
+  Serial.print(": IN=");
+  Serial.print(counter.getRightCount());
+  Serial.print(" OUT=");
+  Serial.print(counter.getLeftCount());
+}
+
+void printDualGrid(unsigned long now) {
+  if (!leftCounter.isCalibrated() || !rightCounter.isCalibrated()) { return; }
+  Serial.println();
+  Serial.println("L (0x30), mm                                     | R (0x32), mm");
+  // Display each sensor's latest frame; acquisition stays independent.
+  for (int row = 0; row < lidar::GRID_SIZE; ++row) {
+    printGridRow(data1, leftStats, row, now);
+    Serial.print("| ");
+    printGridRow(data2, rightStats, row, now);
+    Serial.println();
+  }
+  // Counts are per-sensor direction events, not deduplicated people counts.
+  Serial.print("RUNNING COUNT | ");
+  printRunningCount("L", leftCounter);
+  Serial.print(" | ");
+  printRunningCount("R", rightCounter);
+  Serial.println();
+  Serial.println();
 }
 
 void resetCalibration() {
@@ -113,7 +159,8 @@ void setup() {
   Serial.print(". R: LPn GPIO");
   Serial.println(lidar::LPN_PIN_2);
   Serial.println("Fix the divider, clear both views, and wait for cal=READY on both.");
-  Serial.println("R resets calibration and local direction totals. Signs are not calibrated ENTER/EXIT.");
+  Serial.println("Then L/R 8x8 grids print every 500 ms: X=invalid, --=unavailable/stale.");
+  Serial.println("R resets calibration and IN/OUT counts. IN=configured positive direction; OUT=negative.");
 }
 
 void loop() {
@@ -138,6 +185,7 @@ void loop() {
     lastStatusAt = now;
     printStatus("L", leftStats, leftCounter, now);
     printStatus("R", rightStats, rightCounter, now);
+    printDualGrid(now);
   }
   delay(1);
 }

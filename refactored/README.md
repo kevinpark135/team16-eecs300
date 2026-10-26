@@ -14,7 +14,7 @@ This directory contains the integrated ESP32 counter, a standalone dual-LiDAR pr
 
 | File | Role |
 | --- | --- |
-| [2LiDARs_direction.ino](lidar/2LiDARs_direction/2LiDARs_direction.ino) | Runs both LiDARs independently without thermal. Prints frame counts, distances, detection status, and direction events. R resets background learning and local totals. |
+| [2LiDARs_direction.ino](lidar/2LiDARs_direction/2LiDARs_direction.ino) | Runs both LiDARs independently without thermal. Prints frame counts, detection status, and direction events. After successful sensor initialization and background calibration on both sensors, prints their latest 8x8 distance grids side by side every 500 ms in millimeters; X means an invalid measurement and -- means unavailable or stale data. Below the grids, RUNNING COUNT shows each sensor's cumulative IN and OUT events. IN is the configured positive (RIGHT) direction and OUT is the negative (LEFT) direction, matching the integrated counter. These are per-sensor events, not occupancy or a deduplicated people count. R resets background learning and local counts and hides the grids until both sensors finish calibration again. |
 | [directionCounter.hpp](lidar/2LiDARs_direction/directionCounter.hpp) | Learns the background, follows an object's center along the selected axis, and emits a direction event once per observed object. |
 | [directionSettings.hpp](lidar/2LiDARs_direction/directionSettings.hpp) | Selects the movement axis and direction reversal independently for L and R. |
 | [lidarCommon.hpp](lidar/2LiDARs_direction/lidarCommon.hpp) | Defines pins and addresses, initializes the sensors, validates measurements, and provides optional startup logging. |
