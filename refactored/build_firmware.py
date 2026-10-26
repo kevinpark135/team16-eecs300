@@ -40,20 +40,24 @@ def prepare_config():
 def stage_lidar(source):
     # Arduino combines every .ino in one directory, so stage one at a time.
     destination = BUILD / "sketches" / source.stem
+    if destination.exists():
+        shutil.rmtree(destination)
     destination.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, destination / source.name)
-    for header in (ROOT / "lidar").glob("*.hpp"):
+    for header in source.parent.glob("*.hpp"):
         shutil.copy2(header, destination / header.name)
     return destination
 
 
 def stage_integrated():
     destination = BUILD / "sketches/integrated"
+    if destination.exists():
+        shutil.rmtree(destination)
     destination.mkdir(parents=True, exist_ok=True)
     for source in (ROOT / "integrated").iterdir():
         if source.suffix in {".ino", ".hpp"}:
             shutil.copy2(source, destination / source.name)
-    for source in (ROOT / "lidar").glob("*.hpp"):
+    for source in (ROOT / "lidar/2LiDARs_direction").glob("*.hpp"):
         shutil.copy2(source, destination / source.name)
     shutil.copy2(ROOT / "thermal/blobDetector.hpp", destination / "blobDetector.hpp")
     for source in (ROOT / "thermal/MLX90640_Thermal_Camera").iterdir():
@@ -77,9 +81,8 @@ def main():
     environment["PYTHONPYCACHEPREFIX"] = str(BUILD / "python-cache")
     sketches = []
     if args.target in {"all", "lidar"}:
-        sources = [ROOT / "lidar/2LiDARs.ino", ROOT / "lidar/direction_sensing.ino",
-                   ROOT / "lidar/2LiDARs_direction/2LiDARs_direction.ino"]
-        sketches.extend((stage_lidar(source), source.stem, []) for source in sources)
+        source = ROOT / "lidar/2LiDARs_direction/2LiDARs_direction.ino"
+        sketches.append((stage_lidar(source), source.stem, []))
     if args.target in {"all", "thermal"}:
         source = ROOT / "thermal/MLX90640_Thermal_Camera"
         sketches.append((source, "MLX90640_Thermal_Camera", []))
