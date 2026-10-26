@@ -10,7 +10,6 @@ team16-eecs300/
 │   └── direction_sensing/      # Original standalone single-LiDAR sketch
 ├── thermal/                    # Active thermal firmware and desktop viewer
 ├── old_version/                # Previous root-level lidar/ and thermal/
-├── build_firmware.py
 └── Makefile
 ```
 
@@ -63,20 +62,22 @@ team16-eecs300/
 
 | File | Role |
 | --- | --- |
-| [Makefile](Makefile) | Builds the desktop viewer, starts firmware compilation, and removes generated output. |
+| [Makefile](Makefile) | Builds the desktop viewer and selected ESP32 firmware using Arduino CLI, stages shared files for the integrated sketch, keeps CLI state and generated output under build/, and provides cleanup. |
 | [thermal/Makefile](thermal/Makefile) | Compiles the SDL viewer into build/thermaltest. |
-| [build_firmware.py](build_firmware.py) | Stages the required shared files into valid Arduino sketch folders under build/sketches and compiles the selected firmware. Does not upload to hardware. |
 | [.gitignore](.gitignore) | Excludes regenerated build output from Git. |
 
 Run these commands from the repository root:
 
 ```sh
-make                                             # Desktop viewer: build/thermaltest
-python3 build_firmware.py --target lidar          # Dual LiDAR
-python3 build_firmware.py --target single-lidar   # Single LiDAR
-python3 build_firmware.py --target integrated     # Combined sensor counter
-python3 build_firmware.py --target thermal        # Thermal binary and diagnostic modes
-make firmware                                    # All five firmware builds
+make                            # Desktop viewer: build/thermaltest
+make firmware-lidar             # Dual LiDAR
+make firmware-single-lidar      # Single LiDAR
+make firmware-integrated        # Combined sensor counter
+make firmware-thermal           # Thermal binary and diagnostic modes
+make firmware                   # All five firmware builds
+make clean                      # Remove generated build output
 ```
 
-Firmware commands compile without uploading. To use Arduino IDE, open the `.ino` file inside the matching standalone sketch folder. The integrated sketch uses shared files staged by `build_firmware.py` under `build/sketches/integrated/`.
+Firmware commands compile without uploading. Arduino CLI, the ESP32 board package, and the SparkFun VL53L5CX library must already be installed. The Makefile finds `arduino-cli` on PATH or uses the copy bundled with Arduino IDE on macOS. Its default board is `esp32:esp32:esp32`; override `FQBN`, `ARDUINO_CLI`, `ARDUINO_DATA`, or `LIDAR_LIBRARY` when needed, for example `make firmware-lidar FQBN=esp32:esp32:esp32`.
+
+To use Arduino IDE, open the `.ino` file inside the matching standalone sketch folder. The integrated sketch uses shared files staged by `make stage-integrated` or `make firmware-integrated` under `build/sketches/integrated/`.
