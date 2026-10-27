@@ -4,16 +4,17 @@
 #include <cstdint>
 
 namespace direction_counter {
+// Distance thresholds use millimeters; motion thresholds use grid cells and seconds.
 const int GRID_SIZE = 8;
 const int ZONE_COUNT = GRID_SIZE * GRID_SIZE;
 const int CALIBRATION_FRAMES = 15;
 const int OBJECT_DELTA_MM = 150;
 const int MAX_OBJECT_DISTANCE_MM = 1200;
 const int MIN_OBJECT_CELLS = 3;
-const int HISTORY_SIZE = 6;
+const int HISTORY_SIZE = 6; // Maximum history; do not wait for it to fill before estimating.
 const float MIN_HORIZONTAL_SPEED = 1.5f;
 const float MIN_HORIZONTAL_TRAVEL = 1.0f;
-const int DIRECTION_CONFIRM_FRAMES = 3;
+const int DIRECTION_CONFIRM_FRAMES = 2;
 const int LOST_RESET_FRAMES = 5;
 
 enum Direction { NONE, LEFT, RIGHT };
@@ -43,6 +44,7 @@ class DirectionCounter {
     lastFrameAt = now;
     hasFrame = true;
     present = false;
+    // Learn per-cell background distances before attempting direction detection.
     if (!isCalibrated()) {
       learnBackground(distances, valid);
       return NONE;
@@ -50,8 +52,10 @@ class DirectionCounter {
 
     float centroid = 0.0f;
     if (!findCentroid(distances, valid, centroid)) {
+      clearDirectionEvidence(); // Direction estimates must come from uninterrupted observations.
       ++lostFrames;
       if (lostFrames >= LOST_RESET_FRAMES) {
+        // Several missing detections rearm the counter for the next object.
         resetTracking();
       }
       return NONE;
@@ -60,13 +64,15 @@ class DirectionCounter {
     present = true;
     lostFrames = 0;
     addHistory(centroid, now);
-    if (historyCount == HISTORY_SIZE) {
+    // Two agreeing estimates can confirm a fast passage on its third observation.
+    if (historyCount >= 2) {
       return confirmDirection(estimateDirection());
     }
     return NONE;
   }
 
  private:
+  // Average valid startup samples separately for each grid cell.
   void learnBackground(const int distances[], const bool valid[]) {
     for (int zone = 0; zone < ZONE_COUNT; ++zone) {
       if (valid[zone]) {
@@ -79,6 +85,7 @@ class DirectionCounter {
       return;
     }
     for (int zone = 0; zone < ZONE_COUNT; ++zone) {
+      // Only frequently observed cells receive a reliable background distance.
       baselineValid[zone] = baselineSamples[zone] >= CALIBRATION_FRAMES / 2;
       if (baselineValid[zone]) {
         baseline[zone] = static_cast<float>(baselineSum[zone]) / baselineSamples[zone];
@@ -88,22 +95,23 @@ class DirectionCounter {
 
   bool findCentroid(const int distances[], const bool valid[], float &centroid) const {
     int objectCells = 0;
-    float weightedX = 0.0f;
-    float totalWeight = 0.0f;
+    double weightedX = 0.0;
+    double totalWeight = 0.0;
     for (int zone = 0; zone < ZONE_COUNT; ++zone) {
       if (!valid[zone]) {
         continue;
       }
       const float distance = distances[zone];
       bool isObject;
+      // Use the learned background when available, otherwise apply a near-range limit.
       if (baselineValid[zone]) {
         isObject = baseline[zone] - distance >= OBJECT_DELTA_MM;
       } else {
         isObject = distance <= MAX_OBJECT_DISTANCE_MM;
       }
       if (isObject) {
-        // Nearby cells contribute more to the horizontal center.
-        const float weight = 1000.0f / (distance + 1.0f);
+        // Nearby cells contribute more to the center along the configured motion axis.
+        const double weight = 1000.0 / (distance + 1.0);
         int position = zone % GRID_SIZE;
         if (config.axis == ROWS) { position = zone / GRID_SIZE; }
         if (config.reverse) { position = GRID_SIZE - 1 - position; }
@@ -115,12 +123,13 @@ class DirectionCounter {
     if (objectCells < MIN_OBJECT_CELLS || totalWeight <= 0.0f) {
       return false;
     }
-    centroid = weightedX / totalWeight;
+    centroid = static_cast<float>(weightedX / totalWeight);
     return true;
   }
 
   void addHistory(float x, unsigned long now) {
     if (historyCount == HISTORY_SIZE) {
+      // Drop the oldest position and its timestamp together when the window is full.
       for (int i = 0; i < HISTORY_SIZE - 1; ++i) {
         xHistory[i] = xHistory[i + 1];
         timeHistory[i] = timeHistory[i + 1];
@@ -132,24 +141,24 @@ class DirectionCounter {
     ++historyCount;
   }
 
-  // REQUIRES: The history contains HISTORY_SIZE positions.
-  // EFFECTS: Returns the fitted slope in columns per second.
+  // REQUIRES: The history contains at least two positions.
+  // EFFECTS: Returns the fitted slope along the configured axis in cells per second.
   float horizontalSpeed() const {
     float times[HISTORY_SIZE] = {};
     float meanTime = 0.0f;
     float meanX = 0.0f;
-    for (int i = 0; i < HISTORY_SIZE; ++i) {
+    for (int i = 0; i < historyCount; ++i) {
       // Subtract before converting to float to preserve timer precision.
       times[i] = static_cast<float>(timeHistory[i] - timeHistory[0]) / 1000.0f;
       meanTime += times[i];
       meanX += xHistory[i];
     }
-    meanTime /= HISTORY_SIZE;
-    meanX /= HISTORY_SIZE;
+    meanTime /= historyCount;
+    meanX /= historyCount;
 
     float numerator = 0.0f;
     float denominator = 0.0f;
-    for (int i = 0; i < HISTORY_SIZE; ++i) {
+    for (int i = 0; i < historyCount; ++i) {
       const float dt = times[i] - meanTime;
       numerator += dt * (xHistory[i] - meanX);
       denominator += dt * dt;
@@ -161,24 +170,24 @@ class DirectionCounter {
   }
 
   Direction estimateDirection() const {
-    float minX = xHistory[0];
-    float maxX = xHistory[0];
-    for (int i = 1; i < HISTORY_SIZE; ++i) {
-      if (xHistory[i] < minX) { minX = xHistory[i]; }
-      if (xHistory[i] > maxX) { maxX = xHistory[i]; }
-    }
+    const float travel = xHistory[historyCount - 1] - xHistory[0];
+    const float latestStep = xHistory[historyCount - 1] - xHistory[historyCount - 2];
     const float speed = horizontalSpeed();
-    if (maxX - minX < MIN_HORIZONTAL_TRAVEL ||
+    if (std::fabs(travel) < MIN_HORIZONTAL_TRAVEL ||
         std::fabs(speed) < MIN_HORIZONTAL_SPEED) {
       return NONE;
     }
-    // Increasing columns are treated as rightward movement.
-    if (speed > 0.0f) {
+    // Early decisions require the fitted slope, net travel, and newest step to agree.
+    if (speed > 0.0f && travel > 0.0f && latestStep > 0.0f) {
       return RIGHT;
     }
-    return LEFT;
+    if (speed < 0.0f && travel < 0.0f && latestStep < 0.0f) {
+      return LEFT;
+    }
+    return NONE;
   }
 
+  // Require repeated agreement before latching a single direction event.
   Direction confirmDirection(Direction direction) {
     if (direction == NONE) {
       candidate = NONE;
@@ -198,10 +207,15 @@ class DirectionCounter {
     return candidate; // Emit once; unchanged following frames return NONE.
   }
 
-  void resetTracking() {
+  // Clear pending motion without rearming an object that has already been counted.
+  void clearDirectionEvidence() {
     historyCount = 0;
     candidate = NONE;
     directionStreak = 0;
+  }
+
+  void resetTracking() {
+    clearDirectionEvidence();
     lostFrames = 0;
     countedCurrentObject = false;
   }
@@ -210,6 +224,7 @@ class DirectionCounter {
   bool present = false;
   bool hasFrame = false;
   unsigned long lastFrameAt = 0;
+  // The per-sensor background stays fixed after startup calibration.
   std::uint32_t baselineSum[ZONE_COUNT] = {};
   int baselineSamples[ZONE_COUNT] = {};
   float baseline[ZONE_COUNT] = {};

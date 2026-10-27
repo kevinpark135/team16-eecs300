@@ -5,6 +5,7 @@
 #include <cstring>
 #include "floatPacket.hpp"
 
+// Keep parser state between reads because serial chunks may split a packet.
 class packetReader {
 public:
     // MODIFIES: Parser state and counters.
@@ -13,6 +14,7 @@ public:
         ++totalBytes;
         switch (state) {
         case WAIT_HEADER1:
+            // Ignore incoming bytes until the first header byte appears.
             if (byte == HEADER1) {
                 ++header1Candidates;
                 state = WAIT_HEADER2;
@@ -30,6 +32,7 @@ public:
             }
             break;
         case READ_PAYLOAD:
+            // Header-like bytes inside the fixed-size payload are ordinary data.
             payload[bytesRead] = byte;
             ++bytesRead;
             if (bytesRead == THERMAL_PAYLOAD_SIZE) {
@@ -70,6 +73,7 @@ private:
     static const std::uint8_t HEADER2 = 0xBB;
     State state = WAIT_HEADER1;
     std::size_t bytesRead = 0;
+    // Publish a new float packet only after this byte buffer is complete.
     std::uint8_t payload[THERMAL_PAYLOAD_SIZE] = {};
     floatPacket currentPacket;
     std::uint64_t totalBytes = 0;

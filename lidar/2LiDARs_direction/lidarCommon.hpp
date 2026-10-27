@@ -6,13 +6,14 @@
 namespace lidar {
 const int GRID_SIZE = 8;
 const int ZONE_COUNT = GRID_SIZE * GRID_SIZE;
+// Share the I2C bus, but use separate LPn pins to assign unique sensor addresses.
 const int SDA_PIN = 21;
 const int SCL_PIN = 22;
 const int LPN_PIN_1 = 25;  // Left LiDAR LPn pin.
 const int LPN_PIN_2 = 19;
 const uint8_t SENSOR_1_ADDRESS = 0x30;
 const uint8_t SENSOR_2_ADDRESS = 0x32;
-const int RANGING_FREQUENCY_HZ = 15;
+const int RANGING_FREQUENCY_HZ = 15; // Sensor sampling is separate from the display interval.
 
 // MODIFIES: sensor and the I2C bus.
 // EFFECTS: Starts 8x8 ranging; returns false if any setting fails.
@@ -22,6 +23,7 @@ inline bool configureSensor(SparkFun_VL53L5CX &sensor) {
          sensor.startRanging();
 }
 
+// Probe the default and assigned addresses during startup diagnostics.
 inline void printSensorAddresses() {
   const uint8_t addresses[] = {0x29, SENSOR_1_ADDRESS, SENSOR_2_ADDRESS};
   Serial.print("[I2C]");
@@ -41,6 +43,7 @@ inline void printSensorAddresses() {
   Serial.println();
 }
 
+// Wake one sensor at its default address, then assign its own bus address.
 inline bool wakeSensor(SparkFun_VL53L5CX &sensor, int shutdownPin,
                        uint8_t address, bool logProgress = false) {
   digitalWrite(shutdownPin, HIGH);
@@ -90,6 +93,7 @@ inline bool startSensorPair(SparkFun_VL53L5CX &first,
   return configureSensor(second);
 }
 
+// Accept only reported targets with an allowed status and a positive distance.
 inline bool validReading(const VL53L5CX_ResultsData &data, int zone) {
   const int status = data.target_status[zone];
   return data.nb_target_detected[zone] > 0 &&

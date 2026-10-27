@@ -16,9 +16,10 @@ const int kWidth = 32;
 const int kHeight = 24;
 const std::size_t kPixelCount = kWidth * kHeight;
 using Clock = std::chrono::steady_clock;
-// std::array is a fixed-size array with size(), fill(), and data().
+// Row-major Celsius values for one complete sensor frame.
 using TemperatureFrame = std::array<float, kPixelCount>;
 
+// Restrict detection to this rectangle in sensor coordinates.
 struct Roi
 {
     int x = 0;
@@ -129,12 +130,14 @@ struct FrameResult
     }
 };
 
+// Shared temperature detector for the desktop viewer and integrated ESP32 sketch.
 class BlobDetector
 {
 public:
     explicit BlobDetector(DetectorConfig config = {}, Clock::time_point startedAt = Clock::now())
         : config_(config), awaitingSince_(startedAt)
     {
+        // Reject settings that would make calibration or ROI access invalid.
         const Roi &roi = config_.roi;
         if (config_.calibrationFrames == 0 || config_.minBlobArea == 0 ||
             !std::isfinite(config_.deltaThresholdC) || config_.deltaThresholdC < 0.0f ||
@@ -164,6 +167,7 @@ public:
         return processPixels(temperatureC.data(), receivedAt);
     }
 
+    // Discard the learned background and start a new calibration period.
     void reset(Clock::time_point resetAt = Clock::now())
     {
         for (std::size_t i = 0; i < kPixelCount; ++i)
@@ -205,11 +209,13 @@ private:
                y >= roi.y && y < roi.y + roi.height;
     }
 
+    // Freeze a separate median background temperature for each usable pixel.
     void finishCalibration()
     {
         for (std::size_t i = 0; i < kPixelCount; ++i)
         {
             std::vector<float> &samples = backgroundSamples_[i];
+            // Pixels with too few finite samples stay excluded from detection.
             if (samples.size() >= config_.minimumBackgroundSamples())
             {
                 std::sort(samples.begin(), samples.end());
@@ -244,6 +250,7 @@ private:
         }
         result.invalidPixelCount = kPixelCount - result.finitePixelCount;
 
+        // Startup frames build the background; later frames detect warm regions.
         if (!backgroundReady_)
         {
             collectBackground(temperatureC, result);
@@ -260,6 +267,7 @@ private:
         return result;
     }
 
+    // Learn from finite temperature samples during the startup frames.
     void collectBackground(const float *temperatureC, FrameResult &result)
     {
         for (std::size_t i = 0; i < kPixelCount; ++i)
@@ -305,6 +313,7 @@ private:
                 continue;
             }
             ++result.validPixelCount;
+            // Foreground means current Celsius minus background meets the threshold.
             foreground[i] = static_cast<double>(temperatureC[i]) - backgroundC_[i]
                             >= config_.deltaThresholdC;
         }
@@ -380,6 +389,7 @@ private:
                 }
             }
 
+            // Drop small connected regions before assigning a frame-local label.
             if (blob.areaPixels < config_.minBlobArea)
                 continue;
             blob.label = blobs.size() + 1;

@@ -2,6 +2,7 @@
 #include <math.h>
 #include <SparkFun_VL53L5CX_Library.h>
 
+// Single-sensor flow: learn background -> follow the centroid -> count direction.
 SparkFun_VL53L5CX myImager;
 VL53L5CX_ResultsData measurementData;
 
@@ -14,7 +15,7 @@ const int GRID_SIZE = 8;
 const int NUM_ZONES = 64;
 
 // Sensor runs at 15 Hz.
-// We print every 3 frames -> Serial Monitor updates ~5 Hz.
+// Print every DISPLAY_DIVIDER received frames; 1 displays every received frame.
 const int DISPLAY_DIVIDER = 1;
 
 // Short startup calibration used only to learn fixed objects.
@@ -31,8 +32,7 @@ const int MAX_OBJECT_DISTANCE_MM = 1200;
 // Require multiple cells so random noise is ignored.
 const int MIN_OBJECT_CELLS = 3;
 
-// Recent motion history.
-// 6 frames at 15 Hz = about 0.4 seconds.
+// Keep six recent positions for the direction fit.
 const int HISTORY_SIZE = 6;
 
 // Horizontal speed threshold in grid columns / second.
@@ -104,6 +104,7 @@ bool validReading(int zone)
 {
   int status = measurementData.target_status[zone];
 
+  // Check target presence, status, and distance together before using this cell.
   return (
     measurementData.nb_target_detected[zone] > 0 &&
     (status == 5 || status == 9) &&
@@ -147,6 +148,7 @@ void printMatrix()
 
 void addHistory(float x)
 {
+  // Keep each centroid paired with the time it was observed.
   float currentTime = millis() / 1000.0f;
 
   if (historyCount < HISTORY_SIZE)
@@ -177,6 +179,7 @@ void addHistory(float x)
 
 float calculateHorizontalSpeed()
 {
+  // Called only after the history contains HISTORY_SIZE positions.
   float meanT = 0;
   float meanX = 0;
 
@@ -214,6 +217,7 @@ float calculateHorizontalSpeed()
 
 void resetTracking()
 {
+  // Clear motion state while preserving the cumulative LEFT/RIGHT counts.
   historyCount = 0;
 
   candidateDirection = DIR_NONE;
@@ -296,7 +300,7 @@ void loop()
     calibrationFrame++;
 
 
-    // Only update Serial Monitor ~5 times/sec
+    // Display at the configured received-frame interval during calibration too.
     if (frameNumber % DISPLAY_DIVIDER == 0)
     {
       Serial.print("Frame ");
@@ -373,12 +377,7 @@ void loop()
       bool objectDetected = false;
 
 
-      // -------------------------------------------------------
-      // Case 1:
-      // This zone had a fixed background target.
-      //
-      // Current target must be significantly closer.
-      // -------------------------------------------------------
+      // Mark cells sufficiently closer than their learned background.
 
       if (baselineValid[zone])
       {
@@ -392,12 +391,7 @@ void loop()
       }
 
 
-      // -------------------------------------------------------
-      // Case 2:
-      // This zone was originally empty (X).
-      //
-      // A new valid target appearing nearby is an object.
-      // -------------------------------------------------------
+      // Without a reliable baseline, accept targets within the near-range limit.
 
       else
       {
@@ -469,8 +463,7 @@ void loop()
         fabs(horizontalSpeed) >= MIN_HORIZONTAL_SPEED
       )
       {
-        // You already verified that increasing columns
-        // correspond to physical movement toward RIGHT.
+        // Increasing grid columns map to RIGHT in this standalone sketch.
 
         if (horizontalSpeed > 0)
         {
@@ -547,7 +540,7 @@ void loop()
 
 
   // ==========================================================
-  // DISPLAY ~5 Hz
+  // DISPLAY CURRENT FRAME AND COUNTS
   // ==========================================================
 
   if (frameNumber % DISPLAY_DIVIDER == 0)

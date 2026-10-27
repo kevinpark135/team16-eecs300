@@ -1,83 +1,81 @@
 # Sensor Code
 
-The repository root contains the active integrated ESP32 counter, standalone single- and dual-LiDAR programs, and the thermal firmware and desktop viewer. Shared headers and driver files are required by these programs. The previous root-level sensor code is preserved under [old_version/lidar](old_version/lidar/) and [old_version/thermal](old_version/thermal/).
-
-```text
-team16-eecs300/
-├── integrated/                 # Active combined sensor counter
-├── lidar/
-│   ├── 2LiDARs_direction/       # Active dual-LiDAR grid and IN/OUT counts
-│   └── direction_sensing/      # Original standalone single-LiDAR sketch
-├── thermal/                    # Active thermal firmware and desktop viewer
-├── old_version/                # Previous root-level lidar/ and thermal/
-└── Makefile
-```
-
-## Integrated ESP32 Counter
+## Integrated Counter
 
 | File | Role |
 | --- | --- |
-| [integrated.ino](integrated/integrated.ino) | Reads both LiDARs and the thermal camera on one ESP32, combines their results, and prints passage decisions and occupancy totals. |
-| [passageCounter.hpp](integrated/passageCounter.hpp) | Applies the thermal-count decision rules, matches direction events within a time window, prevents repeated counts, and waits for the scene to clear. |
-| [systemConfig.hpp](integrated/systemConfig.hpp) | Defines timing, thermal stability, and starting occupancy settings. |
+| [integrated.ino](integrated/integrated.ino) | Combines LiDAR direction events and thermal blob counts to track passages and occupancy. |
+| [passageCounter.hpp](integrated/passageCounter.hpp) | Matches sensor events and updates entry, exit, and occupancy counts. |
+| [systemConfig.hpp](integrated/systemConfig.hpp) | Defines timing and counting settings. |
 
 ## Single LiDAR
 
 | File | Role |
 | --- | --- |
-| [direction_sensing.ino](lidar/direction_sensing/direction_sensing.ino) | Original single-LiDAR sketch, copied without code changes from the previous lidar directory. Learns a background, prints an 8x8 distance grid, and accumulates LEFT/RIGHT direction counts. Its separate sketch folder prevents Arduino from combining it with the dual-LiDAR program. |
+| [direction_sensing.ino](lidar/direction_sensing/direction_sensing.ino) | Reads one LiDAR and prints its 8x8 distance grid and LEFT/RIGHT counts. |
 
 ## Dual LiDAR
 
 | File | Role |
 | --- | --- |
-| [2LiDARs_direction.ino](lidar/2LiDARs_direction/2LiDARs_direction.ino) | Runs both LiDARs independently without thermal. Prints frame counts, detection status, and direction events. After successful sensor initialization and background calibration on both sensors, prints their latest 8x8 distance grids side by side every 500 ms in millimeters; X means an invalid measurement and -- means unavailable or stale data. Below the grids, RUNNING COUNT shows each sensor's cumulative IN and OUT events. IN is the configured positive (RIGHT) direction and OUT is the negative (LEFT) direction, matching the integrated counter. These are per-sensor events, not occupancy or a deduplicated people count. R resets background learning and local counts and hides the grids until both sensors finish calibration again. |
-| [directionCounter.hpp](lidar/2LiDARs_direction/directionCounter.hpp) | Learns the background, follows an object's center along the selected axis, and emits a direction event once per observed object. |
-| [directionSettings.hpp](lidar/2LiDARs_direction/directionSettings.hpp) | Selects the movement axis and direction reversal independently for L and R. |
-| [lidarCommon.hpp](lidar/2LiDARs_direction/lidarCommon.hpp) | Defines pins and addresses, initializes the sensors, validates measurements, and provides optional startup logging. |
+| [2LiDARs_direction.ino](lidar/2LiDARs_direction/2LiDARs_direction.ino) | Reads two LiDARs and prints side-by-side 8x8 distance grids and IN/OUT counts. |
+| [directionCounter.hpp](lidar/2LiDARs_direction/directionCounter.hpp) | Learns the background and confirms consistent movement from recent positions, counting each observed object once. |
+| [directionSettings.hpp](lidar/2LiDARs_direction/directionSettings.hpp) | Sets the movement axis and direction reversal for each LiDAR. |
+| [lidarCommon.hpp](lidar/2LiDARs_direction/lidarCommon.hpp) | Defines hardware settings, initializes both LiDARs, and validates readings. |
+| [directionCounter_test.cpp](lidar/2LiDARs_direction/tests/directionCounter_test.cpp) | Checks fast passages, mounting direction, noise rejection, and duplicate-count prevention using synthetic frames. |
 
 ## Thermal Firmware
 
 | File | Role |
 | --- | --- |
-| [MLX90640_Thermal_Camera.ino](thermal/MLX90640_Thermal_Camera/MLX90640_Thermal_Camera.ino) | Standalone ESP32 program that sends temperature frames to the desktop viewer using the AA BB + 3072-byte payload format. |
-| [MLX90640_API.h](thermal/MLX90640_Thermal_Camera/MLX90640_API.h) | Defines calibration data and declares the manufacturer sensor API. |
-| [MLX90640_API.cpp](thermal/MLX90640_Thermal_Camera/MLX90640_API.cpp) | Reads sensor frames and implements calibration extraction, sensor settings, and temperature calculations. |
-| [MLX90640_I2C_Driver.h](thermal/MLX90640_Thermal_Camera/MLX90640_I2C_Driver.h) | Declares the I2C transport interface and read chunk size. |
-| [MLX90640_I2C_Driver.cpp](thermal/MLX90640_Thermal_Camera/MLX90640_I2C_Driver.cpp) | Transfers sensor words through Arduino Wire and checks transfer/readback errors. |
-| [thermalCamera.hpp](thermal/MLX90640_Thermal_Camera/thermalCamera.hpp) | Declares the integrated program's thermal adapter and its frame/calibration storage. |
-| [thermalCamera.cpp](thermal/MLX90640_Thermal_Camera/thermalCamera.cpp) | Initializes thermal on the shared bus and collects complete subpage pairs across loop iterations. |
-| [Thermal_Config.h](thermal/MLX90640_Thermal_Camera/Thermal_Config.h) | Selects binary or diagnostic-text output for the standalone thermal program. |
+| [MLX90640_Thermal_Camera.ino](thermal/MLX90640_Thermal_Camera/MLX90640_Thermal_Camera.ino) | Reads MLX90640 temperatures and sends frames over serial. |
+| [MLX90640_API.h](thermal/MLX90640_Thermal_Camera/MLX90640_API.h) | Declares sensor functions and calibration structures. |
+| [MLX90640_API.cpp](thermal/MLX90640_Thermal_Camera/MLX90640_API.cpp) | Reads sensor frames and calculates calibrated temperatures. |
+| [MLX90640_I2C_Driver.h](thermal/MLX90640_Thermal_Camera/MLX90640_I2C_Driver.h) | Declares the thermal sensor's I2C interface. |
+| [MLX90640_I2C_Driver.cpp](thermal/MLX90640_Thermal_Camera/MLX90640_I2C_Driver.cpp) | Implements I2C register reads and writes. |
+| [thermalCamera.hpp](thermal/MLX90640_Thermal_Camera/thermalCamera.hpp) | Declares the thermal adapter used by the integrated counter. |
+| [thermalCamera.cpp](thermal/MLX90640_Thermal_Camera/thermalCamera.cpp) | Initializes thermal sensing and combines subpages into complete frames. |
+| [Thermal_Config.h](thermal/MLX90640_Thermal_Camera/Thermal_Config.h) | Selects binary or diagnostic serial output. |
 
-## Shared Detection and Desktop Viewer
+## Detection and Viewer
 
 | File | Role |
 | --- | --- |
-| [blobDetector.hpp](thermal/blobDetector.hpp) | Shared by the integrated ESP32 program and desktop viewer. Learns a thermal background and reports connected warm regions and data quality. |
-| [thermaltest.cpp](thermal/thermaltest.cpp) | Opens the serial port and displays thermal frames and blob overlays using SDL. |
-| [packetReader.hpp](thermal/packetReader.hpp) | Finds packet headers and reconstructs complete temperature payloads from serial bytes. |
+| [blobDetector.hpp](thermal/blobDetector.hpp) | Learns a temperature background and detects connected warm regions. |
+| [thermaltest.cpp](thermal/thermaltest.cpp) | Displays serial temperature frames and blob overlays with SDL. |
+| [packetReader.hpp](thermal/packetReader.hpp) | Reconstructs temperature packets from serial bytes. |
 | [floatPacket.hpp](thermal/floatPacket.hpp) | Defines the temperature packet and payload size. |
 
-## Build Files
+## Build
 
 | File | Role |
 | --- | --- |
-| [Makefile](Makefile) | Builds the desktop viewer and selected ESP32 firmware using Arduino CLI, stages shared files for the integrated sketch, keeps CLI state and generated output under build/, and provides cleanup. |
-| [thermal/Makefile](thermal/Makefile) | Compiles the SDL viewer into build/thermaltest. |
-| [.gitignore](.gitignore) | Excludes regenerated build output from Git. |
+| [Makefile](Makefile) | Builds the viewer and ESP32 firmware and removes generated files. |
+| [thermal/Makefile](thermal/Makefile) | Builds the SDL thermal viewer. |
+
+## Makefile Usage
 
 Run these commands from the repository root:
 
 ```sh
-make                            # Desktop viewer: build/thermaltest
-make firmware-lidar             # Dual LiDAR
-make firmware-single-lidar      # Single LiDAR
-make firmware-integrated        # Combined sensor counter
-make firmware-thermal           # Thermal binary and diagnostic modes
-make firmware                   # All five firmware builds
-make clean                      # Remove generated build output
+make                            # Build the SDL viewer
+make firmware                   # Build all five firmware variants
+make firmware-lidar             # Build dual LiDAR firmware
+make firmware-single-lidar      # Build single LiDAR firmware
+make firmware-integrated        # Build the integrated counter
+make firmware-thermal           # Build thermal binary and diagnostic modes
+make stage-integrated           # Collect integrated sketch files without compiling
+make test-lidar                 # Run synthetic direction-counter checks without hardware
+make clean                      # Remove the build directory
 ```
 
-Firmware commands compile without uploading. Arduino CLI, the ESP32 board package, and the SparkFun VL53L5CX library must already be installed. The Makefile finds `arduino-cli` on PATH or uses the copy bundled with Arduino IDE on macOS. Its default board is `esp32:esp32:esp32`; override `FQBN`, `ARDUINO_CLI`, `ARDUINO_DATA`, or `LIDAR_LIBRARY` when needed, for example `make firmware-lidar FQBN=esp32:esp32:esp32`.
+The viewer is saved as `build/thermaltest`; firmware output is saved under `build/firmware/`. Firmware targets compile without uploading to the board.
 
-To use Arduino IDE, open the `.ino` file inside the matching standalone sketch folder. The integrated sketch uses shared files staged by `make stage-integrated` or `make firmware-integrated` under `build/sketches/integrated/`.
+The viewer requires a C++17 compiler and SDL2 with `sdl2-config`. Firmware builds require Arduino CLI, the ESP32 board package, and the SparkFun VL53L5CX library.
+
+The default board is `esp32:esp32:esp32`. Override `FQBN`, `ARDUINO_CLI`, `ARDUINO_DATA`, or `LIDAR_LIBRARY` when needed:
+
+```sh
+make firmware-lidar FQBN=esp32:esp32:esp32
+make firmware-lidar ARDUINO_CLI="/path/to/arduino-cli"
+```

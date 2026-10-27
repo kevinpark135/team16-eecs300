@@ -18,6 +18,7 @@
 #include "packetReader.hpp"
 #include "blobDetector.hpp"
 
+// Desktop flow: serial bytes -> temperature packets -> blobs -> SDL display.
 const int SCREEN_WIDTH = 1280;
 const int SCREEN_HEIGHT = 720;
 const int CELL_SIZE = 10;
@@ -52,6 +53,7 @@ private:
     SDL_Window *window = nullptr;
     SDL_Renderer *renderer = nullptr;
     bool sdlInitialized = false;
+    // Keep received temperatures, detection state, and display colors separate.
     packetReader reader;
     SDL_Color pixels[THERMAL_PIXEL_COUNT] = {};
     thermal::BlobDetector detector;
@@ -75,6 +77,7 @@ bool ThermalViewer::openSerialPort() {
             return fail("open", "Resource busy; close Arduino Serial Monitor and any other viewer");
         return fail("open", std::strerror(errno));
     }
+    // Request exclusive access so another reader does not consume this stream.
 #ifdef TIOCEXCL
     if (ioctl(serialPort, TIOCEXCL) != 0)
     {
@@ -120,6 +123,7 @@ bool ThermalViewer::openSerialPort() {
 }
 
 bool ThermalViewer::initialize() {
+    // Set up the serial connection before creating the SDL window and renderer.
     if (!openSerialPort()) {
         return false;
     }
@@ -171,6 +175,7 @@ void ThermalViewer::initializeWaitingPattern() {
 }
 
 bool ThermalViewer::receiveBytes() {
+    // A single read may contain part of a packet or several complete packets.
     std::uint8_t buffer[4096];
     const ssize_t size = read(serialPort, buffer, sizeof(buffer));
     ++readCalls;
@@ -250,6 +255,7 @@ SDL_Color ThermalViewer::heatmapColor(double value) const {
 }
 
 void ThermalViewer::updateColors(const floatPacket &packet) {
+    // Use this frame's finite temperature range to set the heatmap contrast.
     float minimum = std::numeric_limits<float>::infinity();
     float maximum = -std::numeric_limits<float>::infinity();
     std::size_t finiteCount = 0;
@@ -265,6 +271,7 @@ void ThermalViewer::updateColors(const floatPacket &packet) {
             pixels[i] = SDL_Color{255, 0, 255, 255};
             continue;
         }
+        // A flat-temperature frame uses the middle color without dividing by zero.
         double normalized = 0.5;
         if (maximum > minimum) {
             // Double arithmetic also handles extreme finite float values safely.
@@ -319,6 +326,7 @@ void ThermalViewer::updateDetectionTitle(const thermal::FrameResult &result) {
 }
 
 void ThermalViewer::drawBlobOverlays(const thermal::FrameResult &result) const {
+    // Scale sensor coordinates into screen coordinates for boxes and centroids.
     if (!result.hasDetection()) { return; }
     for (const thermal::Blob &blob : result.blobs) {
         const thermal::BoundingBox &box = blob.boundingBox;
@@ -348,6 +356,7 @@ void ThermalViewer::drawFrame(const thermal::FrameResult &result) const {
             SDL_RenderFillRect(renderer, &rect);
         }
     }
+    // Draw overlays after the heatmap so the outlines stay visible.
     drawBlobOverlays(result);
     SDL_RenderPresent(renderer);
 }
@@ -371,6 +380,7 @@ int ThermalViewer::run() {
     thermal::Clock::time_point lastStatusLog = thermal::Clock::now() - std::chrono::seconds(2);
     thermal::DetectionStatus previousStatus = thermal::DetectionStatus::Waiting;
     while (true) {
+        // Handle window events even when no new sensor frame arrives.
         SDL_Event event;
         while (SDL_PollEvent(&event) != 0) {
             if (event.type == SDL_QUIT) { return 0; }
@@ -396,6 +406,7 @@ int ThermalViewer::run() {
             if (!receiveBytes()) { return 1; }
         }
         const thermal::Clock::time_point now = thermal::Clock::now();
+        // Update freshness without running detection again on the same packet.
         const thermal::FrameResult result = detector.snapshot(now);
         updateDetectionTitle(result);
         if (result.status != previousStatus) {

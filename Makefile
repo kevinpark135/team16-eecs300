@@ -10,6 +10,9 @@ ARDUINO_CONFIG := $(BUILD_DIR)/arduino-cli.yaml
 THERMAL_SOURCE := thermal/MLX90640_Thermal_Camera
 LIDAR_SOURCE := lidar/2LiDARs_direction
 INTEGRATED_SKETCH := $(BUILD_DIR)/sketches/integrated
+HOST_CXX ?= clang++
+HOST_CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -Wpedantic
+LIDAR_TEST := $(BUILD_DIR)/tests/directionCounter_test
 
 ARDUINO_COMPILE = TMPDIR="$(BUILD_DIR)/tmp" PYTHONPYCACHEPREFIX="$(BUILD_DIR)/python-cache" \
 	"$(ARDUINO_CLI)" compile --config-file "$(ARDUINO_CONFIG)" --fqbn "$(FQBN)" \
@@ -17,7 +20,7 @@ ARDUINO_COMPILE = TMPDIR="$(BUILD_DIR)/tmp" PYTHONPYCACHEPREFIX="$(BUILD_DIR)/py
 
 .PHONY: all viewer firmware firmware-lidar firmware-single-lidar firmware-integrated \
 	firmware-thermal firmware-thermal-binary firmware-thermal-diagnostic \
-	prepare-firmware stage-integrated clean
+	prepare-firmware stage-integrated test-lidar clean
 
 all: viewer
 
@@ -69,6 +72,13 @@ stage-integrated: prepare-firmware
 
 firmware-integrated: stage-integrated
 	$(ARDUINO_COMPILE) --build-path "$(BUILD_DIR)/firmware/integrated" "$(INTEGRATED_SKETCH)"
+
+test-lidar: $(LIDAR_TEST)
+	"$(LIDAR_TEST)"
+
+$(LIDAR_TEST): $(LIDAR_SOURCE)/tests/directionCounter_test.cpp $(LIDAR_SOURCE)/directionCounter.hpp $(LIDAR_SOURCE)/directionSettings.hpp
+	mkdir -p "$(dir $(LIDAR_TEST))"
+	$(HOST_CXX) $(HOST_CXXFLAGS) "$(LIDAR_SOURCE)/tests/directionCounter_test.cpp" -o "$@"
 
 clean:
 	rm -rf "$(BUILD_DIR)"
