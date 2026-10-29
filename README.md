@@ -18,7 +18,7 @@
 
 | File | Role |
 | --- | --- |
-| [2LiDARs_direction.ino](lidar/2LiDARs_direction/2LiDARs_direction.ino) | Reads two LiDARs and prints side-by-side 8x8 distance grids and IN/OUT counts. |
+| [2LiDARs_direction.ino](lidar/2LiDARs_direction/2LiDARs_direction.ino) | Reads two LiDARs and rotates their grids into a combined 16x8 distance view, placing both bottom boundary rows at the center. Prints each sensor's IN/OUT counts. |
 | [directionCounter.hpp](lidar/2LiDARs_direction/directionCounter.hpp) | Learns the background and confirms consistent movement from recent positions, counting each observed object once. |
 | [directionSettings.hpp](lidar/2LiDARs_direction/directionSettings.hpp) | Sets the movement axis and direction reversal for each LiDAR. |
 | [lidarCommon.hpp](lidar/2LiDARs_direction/lidarCommon.hpp) | Defines hardware settings, initializes both LiDARs, and validates readings. |

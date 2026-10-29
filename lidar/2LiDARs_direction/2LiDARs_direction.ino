@@ -39,10 +39,14 @@ void processSensor(SparkFun_VL53L5CX &sensor,
 }
 
 void printGridRow(const VL53L5CX_ResultsData &data, const SensorStats &stats,
-                  int row, unsigned long now) {
+                  int row, unsigned long now, bool leftSensor) {
   const bool fresh = stats.frames > 0 && now - stats.lastFrameAt <= FRAME_STALE_MS;
+  // Rotate L 90 degrees counterclockwise and R 90 degrees clockwise for display.
+  // Both raw bottom rows then meet at the center of the combined 16x8 view.
   for (int column = 0; column < lidar::GRID_SIZE; ++column) {
-    const int zone = row * lidar::GRID_SIZE + column;
+    const int sensorRow = leftSensor ? column : lidar::GRID_SIZE - 1 - column;
+    const int sensorColumn = leftSensor ? lidar::GRID_SIZE - 1 - row : row;
+    const int zone = sensorRow * lidar::GRID_SIZE + sensorColumn;
     // Distinguish an old frame (--) from an invalid measurement in a fresh frame (X).
     if (!fresh) {
       Serial.print("   -- ");
@@ -76,12 +80,12 @@ void printDualGrid(unsigned long now) {
     return;
   }
   Serial.println();
-  Serial.println("L (0x30), mm                                     | R (0x32), mm");
+  Serial.println("L (0x30), mm - 16x8 view                        | R (0x32), mm");
   // Display each sensor's latest frame; acquisition stays independent.
   for (int row = 0; row < lidar::GRID_SIZE; ++row) {
-    printGridRow(data1, leftStats, row, now);
+    printGridRow(data1, leftStats, row, now, true);
     Serial.print("| ");
-    printGridRow(data2, rightStats, row, now);
+    printGridRow(data2, rightStats, row, now, false);
     Serial.println();
   }
   // Counts are per-sensor direction events, not deduplicated people counts.
@@ -121,7 +125,7 @@ void setup() {
   Serial.print(". R: LPn GPIO");
   Serial.println(lidar::LPN_PIN_2);
   Serial.println("Fix the divider, clear both views, and wait for background calibration to finish.");
-  Serial.print("Then L/R 8x8 grids print every ");
+  Serial.print("Then the combined 16x8 grid prints every ");
   Serial.print(STATUS_INTERVAL_MS);
   Serial.println(" ms: X=invalid, --=unavailable/stale.");
   Serial.println("R resets calibration and IN/OUT counts. IN=configured positive direction; OUT=negative.");
