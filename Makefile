@@ -13,6 +13,7 @@ INTEGRATED_SKETCH := $(BUILD_DIR)/sketches/integrated
 HOST_CXX ?= clang++
 HOST_CXXFLAGS ?= -std=c++17 -O2 -Wall -Wextra -Wpedantic
 LIDAR_TEST := $(BUILD_DIR)/tests/directionCounter_test
+MULTI_LIDAR_TEST := $(BUILD_DIR)/tests/multiObjectCounter_test
 
 ARDUINO_COMPILE = TMPDIR="$(BUILD_DIR)/tmp" PYTHONPYCACHEPREFIX="$(BUILD_DIR)/python-cache" \
 	"$(ARDUINO_CLI)" compile --config-file "$(ARDUINO_CONFIG)" --fqbn "$(FQBN)" \
@@ -73,12 +74,17 @@ stage-integrated: prepare-firmware
 firmware-integrated: stage-integrated
 	$(ARDUINO_COMPILE) --build-path "$(BUILD_DIR)/firmware/integrated" "$(INTEGRATED_SKETCH)"
 
-test-lidar: $(LIDAR_TEST)
+test-lidar: $(LIDAR_TEST) $(MULTI_LIDAR_TEST)
 	"$(LIDAR_TEST)"
+	"$(MULTI_LIDAR_TEST)"
 
 $(LIDAR_TEST): $(LIDAR_SOURCE)/tests/directionCounter_test.cpp $(LIDAR_SOURCE)/directionCounter.hpp $(LIDAR_SOURCE)/directionSettings.hpp
 	mkdir -p "$(dir $(LIDAR_TEST))"
 	$(HOST_CXX) $(HOST_CXXFLAGS) "$(LIDAR_SOURCE)/tests/directionCounter_test.cpp" -o "$@"
+
+$(MULTI_LIDAR_TEST): $(LIDAR_SOURCE)/tests/multiObjectCounter_test.cpp $(LIDAR_SOURCE)/multiObjectCounter.hpp $(LIDAR_SOURCE)/combinedField.hpp $(LIDAR_SOURCE)/directionCounter.hpp
+	mkdir -p "$(dir $(MULTI_LIDAR_TEST))"
+	$(HOST_CXX) $(HOST_CXXFLAGS) "$(LIDAR_SOURCE)/tests/multiObjectCounter_test.cpp" -o "$@"
 
 clean:
 	rm -rf "$(BUILD_DIR)"

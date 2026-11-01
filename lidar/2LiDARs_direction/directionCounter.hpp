@@ -26,9 +26,11 @@ struct DirectionConfig {
   unsigned long frameTimeoutMs = 500;
 };
 
-class DirectionCounter {
+template <int WIDTH, int HEIGHT>
+class GridDirectionCounter {
  public:
-  explicit DirectionCounter(DirectionConfig settings = {}) : config(settings) {}
+  static constexpr int ZONE_COUNT = WIDTH * HEIGHT;
+  explicit GridDirectionCounter(DirectionConfig settings = {}) : config(settings) {}
   bool objectPresent() const { return present; }
   bool isCalibrated() const { return calibrationFrame >= CALIBRATION_FRAMES; }
   unsigned long getLeftCount() const { return leftCount; }
@@ -112,9 +114,9 @@ class DirectionCounter {
       if (isObject) {
         // Nearby cells contribute more to the center along the configured motion axis.
         const double weight = 1000.0 / (distance + 1.0);
-        int position = zone % GRID_SIZE;
-        if (config.axis == ROWS) { position = zone / GRID_SIZE; }
-        if (config.reverse) { position = GRID_SIZE - 1 - position; }
+        int position = zone % WIDTH;
+        if (config.axis == ROWS) { position = zone / WIDTH; }
+        if (config.reverse) { position = (config.axis == ROWS ? HEIGHT : WIDTH) - 1 - position; }
         weightedX += position * weight;
         totalWeight += weight;
         ++objectCells;
@@ -224,7 +226,7 @@ class DirectionCounter {
   bool present = false;
   bool hasFrame = false;
   unsigned long lastFrameAt = 0;
-  // The per-sensor background stays fixed after startup calibration.
+  // The per-cell background stays fixed after startup calibration.
   std::uint32_t baselineSum[ZONE_COUNT] = {};
   int baselineSamples[ZONE_COUNT] = {};
   float baseline[ZONE_COUNT] = {};
@@ -240,4 +242,6 @@ class DirectionCounter {
   unsigned long leftCount = 0;
   unsigned long rightCount = 0;
 };
+// Keep existing 8x8 users, including the thermal-integrated sketch, compatible.
+using DirectionCounter = GridDirectionCounter<GRID_SIZE, GRID_SIZE>;
 } // namespace direction_counter

@@ -3,7 +3,7 @@
 #include "directionCounter.hpp"
 
 namespace lidar {
-// Shared mounting settings for the dual-LiDAR and integrated sketches.
+// Per-sensor mounting settings for the existing integrated sketch.
 inline direction_counter::DirectionConfig leftSettings() {
   direction_counter::DirectionConfig config;
   config.axis = direction_counter::COLUMNS;
