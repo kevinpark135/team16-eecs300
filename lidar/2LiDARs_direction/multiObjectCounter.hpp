@@ -6,6 +6,7 @@
 
 namespace lidar {
 const int MAX_OBJECTS = 2;
+enum PassageZone { UNKNOWN_ZONE, ZONE_A, ZONE_B };
 
 struct Detection {
   float x = 0.0f;
@@ -16,11 +17,24 @@ struct Detection {
   int maxX = 0;
   int minY = 0;
   int maxY = 0;
+  unsigned int sensorMask = 0; // 1=left half, 2=right half, 3=both.
+  bool mergePending = false;
+  PassageZone departureZone = UNKNOWN_ZONE; // Observed while confirming a duplicate pair.
 };
 
 struct MultiObjectConfig {
   direction_counter::DirectionConfig direction;
   float maxMatchDistanceCells = 5.0f;
+  // Initial heuristic settings, not calibrated physical-space measurements.
+  bool mergeEnabled = true;
+  float mergeCenterHalfWidthCells = 4.0f;
+  float mergeMaxYDifferenceCells = 1.0f;
+  float mergeMaxDistanceDifferenceMm = 150.0f;
+  int mergeConfirmFrames = 2;
+  // Position along the configured motion axis, after direction reversal.
+  float zoneAEnd = 2.0f;
+  float zoneBStart = 5.0f;
+  int zoneConfirmFrames = 1;
 };
 
 // One frame may contain two events, including an IN and an OUT together.
@@ -39,26 +53,33 @@ struct ObjectTrack {
   std::uint32_t lastSeenAt = 0;
   float velocityX = 0.0f; // Grid cells per millisecond, for association only.
   float velocityY = 0.0f;
-  float positions[direction_counter::HISTORY_SIZE] = {};
-  std::uint32_t times[direction_counter::HISTORY_SIZE] = {};
-  int historyCount = 0;
-  direction_counter::Direction candidate = direction_counter::NONE;
-  int directionStreak = 0;
-  direction_counter::Direction countedDirection = direction_counter::NONE;
+  int observations = 0;
+  int independentFrames = 0;
+  PassageZone anchorZone = UNKNOWN_ZONE;
+  PassageZone candidateZone = UNKNOWN_ZONE;
+  int zoneStreak = 0;
+  direction_counter::Direction countedDirection = direction_counter::NONE; // Last crossing only.
 };
 
 template <int WIDTH, int HEIGHT>
 class MultiObjectCounter {
  public:
   static constexpr int CELL_COUNT = WIDTH * HEIGHT;
+  static constexpr int MAX_REGIONS = CELL_COUNT / direction_counter::MIN_OBJECT_CELLS;
+  static_assert(WIDTH % 2 == 0, "The combined field needs two equal sensor halves");
   explicit MultiObjectCounter(MultiObjectConfig settings = {}) : config(settings) {}
 
   bool isCalibrated() const { return calibrationFrame >= direction_counter::CALIBRATION_FRAMES; }
   unsigned long getInCount() const { return inCount; }
   unsigned long getOutCount() const { return outCount; }
+  long getOccupancy() const { return static_cast<long>(inCount) - static_cast<long>(outCount); }
+  // Preserve background and current passage states so visible objects do not restart.
+  void resetCounts() { inCount = 0; outCount = 0; }
   int regionCount() const { return regions; } // All regions meeting the area threshold.
   int detectionCount() const { return detectionsUsed; }
-  bool overflow() const { return regions > MAX_OBJECTS; }
+  int mergedCount() const { return mergedPairs; }
+  int effectiveRegionCount() const { return effectiveRegions; }
+  bool overflow() const { return effectiveRegions > MAX_OBJECTS; }
   const Detection &detection(int index) const { return detections[index]; }
   const ObjectTrack &track(int index) const { return tracks[index]; }
   bool hasProcessedFrame() const { return hasFrame; }
@@ -73,6 +94,8 @@ class MultiObjectCounter {
     events.processed = true;
     regions = 0;
     detectionsUsed = 0;
+    mergedPairs = 0;
+    effectiveRegions = 0;
     if (!isCalibrated()) {
       learnBackground(distances, valid);
       return events;
@@ -85,6 +108,8 @@ class MultiObjectCounter {
         tracks[i] = ObjectTrack{};
       }
     }
+    mergeRegions();
+    selectDetections();
     // Extra regions cannot be resolved reliably by a two-object tracker.
     // Keep the largest two for diagnostics, but do not invent count events.
     if (overflow()) {
@@ -111,6 +136,7 @@ class MultiObjectCounter {
         tracks[i] = ObjectTrack{};
         tracks[i].active = true;
         tracks[i].id = nextId++;
+        tracks[i].anchorZone = detections[d].departureZone;
         observe(tracks[i], detections[d], now, events);
         break;
       }
@@ -165,6 +191,7 @@ class MultiObjectCounter {
         totalWeight += weight;
         sumDistance += distances[cell];
         ++region.cells;
+        region.sensorMask |= x < WIDTH / 2 ? 1u : 2u;
         if (x < region.minX) { region.minX = x; }
         if (x > region.maxX) { region.maxX = x; }
         if (y < region.minY) { region.minY = y; }
@@ -185,15 +212,192 @@ class MultiObjectCounter {
       region.x = static_cast<float>(sumX / totalWeight);
       region.y = static_cast<float>(sumY / totalWeight);
       region.distanceMm = static_cast<float>(sumDistance / region.cells);
-      ++regions;
-      // Stable area ranking affects display order, never track identity.
+      rawRegions[regions++] = region;
+    }
+  }
+
+  struct MergeEvidence {
+    bool active = false;
+    bool updated = false;
+    Detection left;
+    Detection right;
+    int frames = 0;
+    PassageZone departureZone = UNKNOWN_ZONE;
+    PassageZone candidateZone = UNKNOWN_ZONE;
+    int zoneFrames = 0;
+    std::uint32_t departureAt = 0;
+    bool departureDelivered = false;
+  };
+
+  bool mergeCandidate(const Detection &left, const Detection &right) const {
+    const float center = (WIDTH - 1) / 2.0f;
+    return left.sensorMask == 1 && right.sensorMask == 2 &&
+        left.x >= center - config.mergeCenterHalfWidthCells &&
+        right.x <= center + config.mergeCenterHalfWidthCells &&
+        std::fabs(left.y - right.y) <= config.mergeMaxYDifferenceCells &&
+        std::fabs(left.distanceMm - right.distanceMm) <= config.mergeMaxDistanceDifferenceMm;
+  }
+
+  int nearestTrack(const Detection &d) const {
+    int best = -1;
+    float bestCost = 0.0f;
+    for (int i = 0; i < MAX_OBJECTS; ++i) {
+      if (!tracks[i].active || !(tracks[i].detection.sensorMask & d.sensorMask)) { continue; }
+      const float cost = matchCost(tracks[i], d, lastFrameAt);
+      if (cost >= 0.0f && (best < 0 || cost < bestCost)) { best = i; bestCost = cost; }
+    }
+    return best;
+  }
+
+  bool protectedPair(const Detection &left, const Detection &right) const {
+    const int a = nearestTrack(left), b = nearestTrack(right);
+    if (a < 0 || b < 0 || a == b) { return false; }
+    // Tentative duplicates can collapse; established independent objects cannot.
+    if (tracks[a].independentFrames >= 2 && tracks[b].independentFrames >= 2) { return true; }
+    return tracks[a].velocityY * tracks[b].velocityY < 0.0f &&
+        std::fabs(tracks[a].velocityY) > 0.001f && std::fabs(tracks[b].velocityY) > 0.001f;
+  }
+
+  static float separationSquared(const Detection &a, const Detection &b) {
+    const float dx = a.x - b.x, dy = a.y - b.y;
+    return dx * dx + dy * dy;
+  }
+
+  int updateMergeEvidence(const Detection &left, const Detection &right, PassageZone &departure) {
+    int best = -1;
+    float bestCost = 0.0f;
+    const float limit = config.maxMatchDistanceCells * config.maxMatchDistanceCells;
+    for (int i = 0; i < MAX_OBJECTS; ++i) {
+      const auto &e = mergeEvidence[i];
+      if (!e.active || e.updated) { continue; }
+      const float a = separationSquared(left, e.left), b = separationSquared(right, e.right);
+      if (a > limit || b > limit) { continue; }
+      if (best < 0 || a + b < bestCost) { best = i; bestCost = a + b; }
+    }
+    if (best < 0) {
+      for (int i = 0; i < MAX_OBJECTS; ++i) {
+        if (!mergeEvidence[i].active) { best = i; break; }
+      }
+      if (best < 0) { return 0; }
+      mergeEvidence[best] = MergeEvidence{};
+    }
+    auto &e = mergeEvidence[best];
+    if (e.active) {
+      const float leftStep = left.y - e.left.y, rightStep = right.y - e.right.y;
+      if (leftStep * rightStep < 0.0f && std::fabs(leftStep) > 0.25f && std::fabs(rightStep) > 0.25f) {
+        e = MergeEvidence{};
+        return -1; // Opposing observations are not duplicate motion.
+      }
+    }
+    e.active = e.updated = true;
+    e.left = left;
+    e.right = right;
+    const PassageZone leftZone = observedZone(left), rightZone = observedZone(right);
+    if (e.departureZone == UNKNOWN_ZONE) {
+      if (leftZone != rightZone || leftZone == UNKNOWN_ZONE) {
+        e.candidateZone = UNKNOWN_ZONE;
+        e.zoneFrames = 0;
+      } else {
+        if (e.candidateZone != leftZone) { e.candidateZone = leftZone; e.zoneFrames = 0; }
+        if (++e.zoneFrames >= config.zoneConfirmFrames) {
+          e.departureZone = leftZone;
+          e.departureAt = lastFrameAt;
+        }
+      }
+    }
+    if (e.frames < config.mergeConfirmFrames) { ++e.frames; }
+    if (e.frames >= config.mergeConfirmFrames && !e.departureDelivered) {
+      if (lastFrameAt - e.departureAt <= config.direction.frameTimeoutMs) { departure = e.departureZone; }
+      e.departureDelivered = true;
+    }
+    return e.frames;
+  }
+
+  void consolidateTracks(const Detection &left, const Detection &right) {
+    int a = nearestTrack(left), b = nearestTrack(right);
+    if (a < 0 || b < 0 || a == b) { return; }
+    // Preserve the older identity and its crossing state, not a new third ID.
+    if (tracks[b].id < tracks[a].id) { const int temp = a; a = b; b = temp; }
+    if (tracks[a].anchorZone == UNKNOWN_ZONE) { tracks[a].anchorZone = tracks[b].anchorZone; }
+    else if (tracks[b].anchorZone != UNKNOWN_ZONE && tracks[a].anchorZone != tracks[b].anchorZone) {
+      tracks[a].anchorZone = UNKNOWN_ZONE;
+    }
+    if (tracks[a].countedDirection == direction_counter::NONE) {
+      tracks[a].countedDirection = tracks[b].countedDirection;
+    }
+    tracks[a].candidateZone = UNKNOWN_ZONE;
+    tracks[a].zoneStreak = 0;
+    tracks[b] = ObjectTrack{};
+  }
+
+  static Detection combine(const Detection &a, const Detection &b) {
+    Detection d;
+    d.cells = a.cells + b.cells;
+    d.x = (a.x * a.cells + b.x * b.cells) / d.cells;
+    d.y = (a.y * a.cells + b.y * b.cells) / d.cells;
+    d.distanceMm = (a.distanceMm * a.cells + b.distanceMm * b.cells) / d.cells;
+    d.minX = a.minX < b.minX ? a.minX : b.minX;
+    d.maxX = a.maxX > b.maxX ? a.maxX : b.maxX;
+    d.minY = a.minY < b.minY ? a.minY : b.minY;
+    d.maxY = a.maxY > b.maxY ? a.maxY : b.maxY;
+    d.sensorMask = a.sensorMask | b.sensorMask;
+    return d;
+  }
+
+  void mergeRegions() {
+    for (int i = 0; i < MAX_OBJECTS; ++i) { mergeEvidence[i].updated = false; }
+    bool consumed[MAX_REGIONS] = {};
+    int partner[MAX_REGIONS];
+    // Mutual nearest candidates avoid combining several regions with one partner.
+    for (int i = 0; i < regions; ++i) {
+      partner[i] = -1;
+      float bestCost = 0.0f;
+      bool tied = false;
+      for (int j = 0; j < regions; ++j) {
+        const auto &left = rawRegions[rawRegions[i].sensorMask == 1 ? i : j];
+        const auto &right = rawRegions[rawRegions[i].sensorMask == 1 ? j : i];
+        if (!config.mergeEnabled || !mergeCandidate(left, right) || protectedPair(left, right)) { continue; }
+        const float cost = std::fabs(left.y - right.y) +
+            std::fabs(left.distanceMm - right.distanceMm) / 1000.0f;
+        if (partner[i] < 0 || cost < bestCost - 0.0001f) {
+          partner[i] = j; bestCost = cost; tied = false;
+        } else if (std::fabs(cost - bestCost) <= 0.0001f) { tied = true; }
+      }
+      if (tied) { partner[i] = -1; }
+    }
+    for (int i = 0; i < regions; ++i) {
+      const int j = partner[i];
+      if (rawRegions[i].sensorMask != 1 || j < 0 || partner[j] != i || consumed[i] || consumed[j]) { continue; }
+      PassageZone departure = UNKNOWN_ZONE;
+      const int frames = updateMergeEvidence(rawRegions[i], rawRegions[j], departure);
+      if (frames < 0) { continue; }
+      if (frames >= config.mergeConfirmFrames) {
+        consolidateTracks(rawRegions[i], rawRegions[j]);
+        rawRegions[i] = combine(rawRegions[i], rawRegions[j]);
+        rawRegions[i].departureZone = departure;
+        consumed[j] = true;
+        ++mergedPairs;
+      } else {
+        // Do not create a crossing event from a still-ambiguous duplicate pair.
+        rawRegions[i].mergePending = rawRegions[j].mergePending = true;
+      }
+    }
+    for (int i = 0; i < MAX_OBJECTS; ++i) {
+      if (!mergeEvidence[i].updated) { mergeEvidence[i] = MergeEvidence{}; }
+    }
+    for (int i = 0; i < regions; ++i) {
+      if (!consumed[i]) { rawRegions[effectiveRegions++] = rawRegions[i]; }
+    }
+  }
+
+  void selectDetections() {
+    for (int i = 0; i < effectiveRegions; ++i) {
+      const Detection &region = rawRegions[i];
       int position = detectionsUsed;
       if (position == MAX_OBJECTS) {
         position = MAX_OBJECTS - 1;
         if (region.cells <= detections[position].cells) { continue; }
-      } else {
-        ++detectionsUsed;
-      }
+      } else { ++detectionsUsed; }
       while (position > 0 && region.cells > detections[position - 1].cells) {
         detections[position] = detections[position - 1];
         --position;
@@ -245,16 +449,11 @@ class MultiObjectCounter {
     }
   }
 
-  void clearEvidence(ObjectTrack &track) {
-    track.historyCount = 0;
-    track.candidate = direction_counter::NONE;
-    track.directionStreak = 0;
-  }
-
   void miss(ObjectTrack &track) {
     if (!track.active) { return; }
     track.observed = false;
-    clearEvidence(track);
+    track.candidateZone = UNKNOWN_ZONE;
+    track.zoneStreak = 0;
     if (++track.missedFrames >= direction_counter::LOST_RESET_FRAMES) { track = ObjectTrack{}; }
   }
 
@@ -264,74 +463,48 @@ class MultiObjectCounter {
     return config.direction.reverse ? (rows ? HEIGHT : WIDTH) - 1 - position : position;
   }
 
+  PassageZone observedZone(const Detection &d) const {
+    const float position = motionPosition(d);
+    return position <= config.zoneAEnd ? ZONE_A : position >= config.zoneBStart ? ZONE_B : UNKNOWN_ZONE;
+  }
+
   void observe(ObjectTrack &track, const Detection &d, std::uint32_t now, FrameEvents &events) {
-    if (track.historyCount > 0 && now != track.lastSeenAt) {
+    if (track.observations > 0 && track.missedFrames == 0 && now != track.lastSeenAt) {
       const float elapsed = static_cast<float>(now - track.lastSeenAt);
       track.velocityX = (d.x - track.detection.x) / elapsed;
       track.velocityY = (d.y - track.detection.y) / elapsed;
-    } else {
-      track.velocityX = track.velocityY = 0.0f;
-    }
+    } else { track.velocityX = track.velocityY = 0.0f; }
     track.detection = d;
     track.lastSeenAt = now;
     track.missedFrames = 0;
     track.observed = true;
-    if (track.historyCount == direction_counter::HISTORY_SIZE) {
-      for (int i = 1; i < track.historyCount; ++i) {
-        track.positions[i - 1] = track.positions[i];
-        track.times[i - 1] = track.times[i];
-      }
-      --track.historyCount;
+    if (track.observations < 2) { ++track.observations; }
+    if (!d.mergePending && track.independentFrames < 2) { ++track.independentFrames; }
+    const PassageZone zone = observedZone(d);
+    if (zone == UNKNOWN_ZONE) {
+      track.candidateZone = UNKNOWN_ZONE;
+      track.zoneStreak = 0;
+      return; // Keep the departure side while passing through the middle.
     }
-    track.positions[track.historyCount] = motionPosition(d);
-    track.times[track.historyCount++] = now;
-    const auto direction = estimateDirection(track);
-    if (direction == direction_counter::NONE) {
-      track.candidate = direction_counter::NONE;
-      track.directionStreak = 0;
-    } else if (direction == track.candidate) {
-      if (track.directionStreak < direction_counter::DIRECTION_CONFIRM_FRAMES) { ++track.directionStreak; }
-    } else {
-      track.candidate = direction;
-      track.directionStreak = 1;
+    if (zone != track.candidateZone) { track.candidateZone = zone; track.zoneStreak = 0; }
+    if (track.zoneStreak < config.zoneConfirmFrames) { ++track.zoneStreak; }
+    if (track.zoneStreak < config.zoneConfirmFrames || zone == track.anchorZone) { return; }
+    if (track.anchorZone == UNKNOWN_ZONE) { track.anchorZone = zone; return; }
+    if (d.mergePending) { return; } // Retain departure evidence, but postpone crossing decisions.
+    if (track.anchorZone == ZONE_A && zone == ZONE_B) {
+      ++inCount; ++events.in; track.countedDirection = direction_counter::RIGHT;
+    } else if (track.anchorZone == ZONE_B && zone == ZONE_A) {
+      ++outCount; ++events.out; track.countedDirection = direction_counter::LEFT;
     }
-    if (track.directionStreak < direction_counter::DIRECTION_CONFIRM_FRAMES ||
-        track.countedDirection != direction_counter::NONE) { return; }
-    track.countedDirection = direction;
-    if (direction == direction_counter::RIGHT) { ++inCount; ++events.in; }
-    if (direction == direction_counter::LEFT) { ++outCount; ++events.out; }
-  }
-
-  direction_counter::Direction estimateDirection(const ObjectTrack &track) const {
-    using namespace direction_counter;
-    if (track.historyCount < 2) { return NONE; }
-    const int last = track.historyCount - 1;
-    const float travel = track.positions[last] - track.positions[0];
-    const float step = track.positions[last] - track.positions[last - 1];
-    float meanTime = 0.0f, meanPosition = 0.0f;
-    for (int i = 0; i <= last; ++i) {
-      meanTime += static_cast<float>(track.times[i] - track.times[0]) / 1000.0f;
-      meanPosition += track.positions[i];
-    }
-    meanTime /= track.historyCount;
-    meanPosition /= track.historyCount;
-    float numerator = 0.0f, denominator = 0.0f;
-    for (int i = 0; i <= last; ++i) {
-      const float dt = static_cast<float>(track.times[i] - track.times[0]) / 1000.0f - meanTime;
-      numerator += dt * (track.positions[i] - meanPosition);
-      denominator += dt * dt;
-    }
-    const float speed = denominator > 0.0f ? numerator / denominator : 0.0f;
-    if (std::fabs(travel) < MIN_HORIZONTAL_TRAVEL || std::fabs(speed) < MIN_HORIZONTAL_SPEED) {
-      return NONE;
-    }
-    if (speed > 0.0f && travel > 0.0f && step > 0.0f) { return RIGHT; }
-    if (speed < 0.0f && travel < 0.0f && step < 0.0f) { return LEFT; }
-    return NONE;
+    // The arrival side becomes the next departure side, allowing a full return.
+    track.anchorZone = zone;
   }
 
   void clearTracks() {
-    for (int i = 0; i < MAX_OBJECTS; ++i) { tracks[i] = ObjectTrack{}; }
+    for (int i = 0; i < MAX_OBJECTS; ++i) {
+      tracks[i] = ObjectTrack{};
+      mergeEvidence[i] = MergeEvidence{};
+    }
   }
 
   MultiObjectConfig config;
@@ -341,6 +514,10 @@ class MultiObjectCounter {
   bool baselineValid[CELL_COUNT] = {};
   bool foreground[CELL_COUNT] = {};
   int calibrationFrame = 0;
+  Detection rawRegions[MAX_REGIONS];
+  MergeEvidence mergeEvidence[MAX_OBJECTS];
+  int mergedPairs = 0;
+  int effectiveRegions = 0;
   Detection detections[MAX_OBJECTS];
   int detectionsUsed = 0;
   int regions = 0;

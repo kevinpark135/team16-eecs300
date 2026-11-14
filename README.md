@@ -20,7 +20,7 @@
 | --- | --- |
 | [2LiDARs_direction.ino](lidar/2LiDARs_direction/2LiDARs_direction.ino) | Reads two LiDARs into one 16x8 field without a display divider. Prints one shared IN/OUT count. |
 | [combinedField.hpp](lidar/2LiDARs_direction/combinedField.hpp) | Rotates and pairs new sensor frames, then feeds the 128-cell multi-object detector. |
-| [multiObjectCounter.hpp](lidar/2LiDARs_direction/multiObjectCounter.hpp) | Builds a foreground mask, finds connected regions, and tracks up to two centroids with independent direction histories and counted states. |
+| [multiObjectCounter.hpp](lidar/2LiDARs_direction/multiObjectCounter.hpp) | Builds a foreground mask, finds connected regions, and merges likely central duplicate observations and tracks up to two objects with independent A/B passage states. |
 | [directionCounter.hpp](lidar/2LiDARs_direction/directionCounter.hpp) | Retains the original one-centroid counter for the existing integrated sketch and supplies shared detection thresholds. |
 | [directionSettings.hpp](lidar/2LiDARs_direction/directionSettings.hpp) | Sets per-sensor mounting directions for the existing integrated sketch. |
 | [lidarCommon.hpp](lidar/2LiDARs_direction/lidarCommon.hpp) | Defines hardware settings, initializes both LiDARs, and validates readings. |
@@ -29,36 +29,71 @@
 
 The dual-LiDAR sketch uses the displayed field's vertical axis: downward movement is IN,
 upward movement is OUT, preserving the previous mounting convention. These labels must
-be checked against the physical entry/exit direction. Counting still uses the existing
-confirmed-motion thresholds, not a crossing line. The scene must be empty for 15 paired startup
+be checked against the physical entry/exit direction. A count now requires an observed
+transition between the two endpoint zones: A (`y <= 2`) and B (`y >= 5`). The scene must be empty for 15 paired startup
 frames. Each detection update needs a new frame from both sensors, with host receive
 times no more than 100 ms apart; this does not synchronize the sensors' exposures.
-`R` clears counts and restarts calibration. The grid displays the latest readings
+Send lowercase `r` in Serial Monitor to reset IN, OUT, and occupancy to zero while
+preserving background calibration and current tracks. Uppercase `R` clears all state
+and restarts calibration. The grid displays the latest readings
 independently, with `X` for invalid cells and `--` for frames older than 500 ms.
 
 The detector groups foreground cells using eight-neighbor connectivity across the entire
 field, including the sensor seam. Each region needs at least three cells. Its centroid
-uses the existing inverse-distance weights; its bounds and mean distance are also recorded.
-No head shape or person-height model is used. The two-object tracker matches detections
-using predicted 2D positions, with a five-cell association radius around either the prediction
-or the last observed position. It tests all assignments to avoid assigning one detection to
-two tracks. Each track owns its direction history and can count once while it remains active.
-Five unmatched paired frames, or more than 500 ms without an observation, retire that track
-without clearing the other track or the running counts. A brief loss clears pending direction
-evidence but retains the counted state. Lost tracks reserve their slots until retirement.
+uses inverse-distance weights; its bounds and mean distance are also recorded. All qualifying
+raw regions are kept until duplicate merging finishes, before selecting at most two tracking inputs.
+No head shape, person-height filter, or 3D coordinate conversion is used.
 
-The serial report defaults to one spaced summary line:
-`RUNNING COUNT | IN: #              OUT: #              CENTROID: #`.
+Central duplicate merging uses regions that belong exclusively to opposite sensor halves.
+Their centroids must be within the central band, close along the travel axis, and similar
+in mean measured distance for two consecutive paired frames. Mutual best matches are required;
+equal-cost alternatives stay separate. Established independent tracks and observed opposing
+motion are protected. Pending pairs cannot emit crossing events. A confirmed pair becomes one
+cell-count-weighted centroid, preserving the older track ID and its passage state when possible.
+This is a heuristic: two nearby people with similar distances and motion can still be confused.
+
+The tuning settings are in `MultiObjectConfig` in `multiObjectCounter.hpp`:
+
+| Setting | Initial value | Meaning |
+| --- | --- | --- |
+| `mergeEnabled` | `true` | Enable central duplicate merging; disable for comparison. |
+| `mergeCenterHalfWidthCells` | `4.0` | Candidate x range is 3.5 through 11.5 around the center at 7.5. |
+| `mergeMaxYDifferenceCells` | `1.0` | Maximum difference between the two region centroids along y. |
+| `mergeMaxDistanceDifferenceMm` | `150` | Maximum difference in region mean distances, in mm. |
+| `mergeConfirmFrames` | `2` | Consecutive compatible paired observations needed to merge. |
+| `zoneAEnd` / `zoneBStart` | `2.0` / `5.0` | Departure/arrival zones along the configured, direction-corrected motion axis. |
+| `zoneConfirmFrames` | `1` | Consecutive observations needed to confirm an endpoint zone. |
+
+For each track, A to B adds one IN and B to A adds one OUT. Returning to the departure
+side from the middle adds nothing. Remaining on the arrival side cannot count again;
+that side becomes the departure side for a later full return. An object first seen in
+the middle must establish an endpoint before it can complete a passage. Direct observed
+A-to-B jumps are allowed when association succeeds, so an intermediate frame is not mandatory.
+The old minimum-speed and direction-streak rules no longer determine dual-LiDAR counts.
+The independent counters used by the existing integrated sketch retain those old rules.
+
+Tracking still tests all two-object assignments using predicted 2D positions and a five-cell
+association radius around either the prediction or last sighting. Five unmatched paired frames,
+or more than 500 ms without an observation, retire a track without clearing other tracks or totals.
+Brief losses retain its established endpoint, but never supply an inferred arrival. Pending merge
+confirmation can retain actually observed departure evidence for a newly consolidated track.
+Lost tracks reserve their slots until retirement.
+
+The serial report includes one spaced summary line:
+`RUNNING COUNT | IN: #              OUT: #              CENTROID: #              OCCUPANCY: #`.
+`OCCUPANCY` is the signed difference IN minus OUT since the last reset; it can be
+negative if exits exceed entries, since no initial room population is configured.
 Set `SHOW_FOV = true` near the top of `2LiDARs_direction.ino` and rebuild/upload
-to show the 16x8 distance grid above the summary. The default `false` hides only
+to show the 16x8 distance grid above the summary. Setting it to `false` hides only
 the grid; sensor acquisition, tracking, and counting continue unchanged.
-`CENTROID` is the number of detected regions in the latest paired frame (up to two),
+`CENTROID` is the number of detections after confirmed duplicate merging (up to two),
 not the number of retained tracks. It shows `--` when that frame is older than 500 ms.
-Detailed region and track diagnostics are hidden. If more than two valid regions appear,
-the detector retains the largest two candidates and pauses counting for that frame.
+Detailed region and track diagnostics are hidden. Before a pair is confirmed it can still
+show two centroids. If more than two regions remain after merging, the detector displays
+the largest two and pauses tracking/counting for that frame.
 
-This version targets spatially separated objects. Touching regions are still one detection;
-merge/split recovery and thermal fusion are not implemented. Region count is not guaranteed
+This version targets spatially separated objects. Touching people in one connected region
+are still one detection; general merge/split recovery and thermal fusion are not implemented. Region count is not guaranteed
 to equal people count. Synthetic tests do not establish physical two-person or wheelchair accuracy.
 
 ## Thermal Firmware

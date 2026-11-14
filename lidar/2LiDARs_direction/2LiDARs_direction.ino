@@ -8,7 +8,7 @@ VL53L5CX_ResultsData data1;
 VL53L5CX_ResultsData data2;
 lidar::CombinedField field;
 bool sensorsReady = false;
-const bool SHOW_FOV = false;                  // Set true to print the 16x8 distance grid above the counts.
+const bool SHOW_FOV = true;                   // Set true to print the 16x8 distance grid above the counts.
 const unsigned long STATUS_INTERVAL_MS = 200; // 5 Hz display; sensor ranging stays at 15 Hz.
 const unsigned long FRAME_STALE_MS = 500;
 unsigned long lastStatusAt = 0;
@@ -101,12 +101,13 @@ void printDualGrid(unsigned long now)
   // Old detections do not describe the currently visible field.
   if (fresh)
   {
-    Serial.println(field.counter.detectionCount());
+    Serial.printf("%-15d", field.counter.detectionCount());
   }
   else
   {
-    Serial.println("--");
+    Serial.printf("%-15s", "--");
   }
+  Serial.printf("OCCUPANCY: %ld\n", field.counter.getOccupancy());
   if (SHOW_FOV)
   {
     Serial.println();
@@ -150,7 +151,7 @@ void setup()
   {
     Serial.println("Grid: X=invalid, --=unavailable/stale.");
   }
-  Serial.println("R resets calibration and counts. IN=down the displayed field; OUT=up.");
+  Serial.println("r resets counts; R resets calibration and counts. IN=down; OUT=up.");
   Serial.println("Tracks up to two separated regions.");
 }
 
@@ -170,7 +171,12 @@ void loop()
   while (Serial.available() > 0)
   {
     const char command = static_cast<char>(Serial.read());
-    if (command == 'r' || command == 'R')
+    if (command == 'r')
+    {
+      field.counter.resetCounts();
+      Serial.println("[reset] IN=0 OUT=0 OCCUPANCY=0");
+    }
+    else if (command == 'R')
     {
       resetCalibration();
     }
